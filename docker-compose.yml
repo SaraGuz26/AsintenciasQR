@@ -27,7 +27,11 @@ services:
     ports:
       - "8000:8000"
     environment:
+      environment:
       DATABASE_URL: "mysql+pymysql://asistencias_user:asistencias_pass@db:3306/asistencias_db?charset=utf8mb4"
+      SECRET_KEY: "dev_key_solo_labo"
+      SECRET_QR: "dev_qr_secret_largo_y_unico"
+      CORS_ORIGINS: '["http://localhost:8000","http://localhost","http://127.0.0.1"]'
       PYTHONPATH: "/app"
       TZ: America/Argentina/Buenos_Aires
     volumes:
