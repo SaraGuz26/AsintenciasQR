@@ -1,15 +1,19 @@
-from enum import Enum
-from sqlalchemy import Column, Integer, String, Boolean, Enum as SAEnum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum
+from sqlalchemy.sql import func
 from app.models.base import Base
+import enum
 
-class Rol(str, Enum):
-    consulta = "consulta"  # solo visualización (Bedelía)
+class RolEnum(str, enum.Enum):
+    DOCENTE = "DOCENTE"
+    ESTUDIANTE = "ESTUDIANTE"
 
 class Usuario(Base):
     __tablename__ = "usuario"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    username = Column(String(80), unique=True, nullable=False)
+    email = Column(String(160), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
-    rol = Column(SAEnum(Rol), nullable=False, default=Rol.consulta)
+    rol = Column(String(32), nullable=False)  # "bedelia" | "docente"
     activo = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

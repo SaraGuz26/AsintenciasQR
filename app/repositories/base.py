@@ -1,4 +1,3 @@
-# app/crud/base.py
 from typing import Generic, TypeVar, Type, Optional, Any
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -38,3 +37,6 @@ class Base(Generic[ModelT, CreateSchemaT, UpdateSchemaT]):
         if obj:
             db.delete(obj)
             db.commit()
+
+# Alias para compatibilidad con el resto del proyecto
+CRUDBase = Base

@@ -1,0 +1,42 @@
+<div class="card" style="max-width:400px; margin:auto;">
+    <h2>Mi Credencial</h2>
+
+    <div id="qr-container" style="margin:20px auto; width:220px; height:220px; border:1px solid #ddd; padding:10px;"></div>
+
+    <p><strong>Docente:</strong> <span id="nombre"></span></p>
+    <p><strong>Legajo:</strong> <span id="legajo"></span></p>
+    <p><strong>ID Credencial:</strong> <span id="credencial"></span></p>
+    <p><strong>Emitida en:</strong> <span id="emitido"></span></p>
+
+    <button onclick="regenerar()" style="margin-top:10px;">Regenerar QR</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+
+<script>
+async function cargar() {
+    const docenteId = 1; // cambiar por ID real (del JWT o sesión)
+    const resp = await fetch(`/docentes/${docenteId}/credencial`);
+    const data = await resp.json();
+
+    document.getElementById("nombre").textContent = data.nombre;
+    document.getElementById("legajo").textContent = data.legajo;
+    document.getElementById("credencial").textContent = data.credencial_id;
+    document.getElementById("emitido").textContent = data.emitido_en;
+
+    const payload = JSON.stringify(data.qr_payload);
+    new QRious({
+        element: document.getElementById("qr-container"),
+        size: 220,
+        value: payload
+    });
+}
+
+async function regenerar() {
+    const docenteId = 1;
+    await fetch(`/docentes/${docenteId}/credencial/regenerar`, { method: "POST" });
+    cargar();
+}
+
+cargar();
+</script>

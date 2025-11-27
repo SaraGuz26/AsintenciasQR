@@ -8,6 +8,7 @@ class EstadoAsistencia(str, Enum):
     TARDE = "TARDE"
     REUBICADO = "REUBICADO"
     FUERA_DE_HORARIO = "FUERA_DE_HORARIO"
+    INVALIDO = "INVALIDO"
 
 class FuenteLectura(str, Enum):
     LECTOR = "LECTOR"

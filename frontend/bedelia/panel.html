@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <title>Panel Docente</title>
+
+    <link rel="stylesheet" href="/frontend/public/css/styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+</head>
+
+<body>
+
+<h1>Panel del Docente</h1>
+
+<div class="two-columns">
+
+    <!-- ====================== -->
+    <!--   DATOS DEL DOCENTE   -->
+    <!-- ====================== -->
+    <section class="card">
+        <h2>Datos del Docente</h2>
+        <p><strong>Nombre:</strong> <span id="doc_nombre"></span></p>
+        <p><strong>Legajo:</strong> <span id="doc_legajo"></span></p>
+        <p><strong>Email:</strong> <span id="doc_email"></span></p>
+    </section>
+
+    <!-- ====================== -->
+    <!--     CREDENCIAL QR     -->
+    <!-- ====================== -->
+    <section class="card">
+        <h2>Mi Credencial</h2>
+
+        <div id="qr-container" style="text-align:center;">
+            <canvas id="qr-canvas"></canvas>
+        </div>
+
+
+        <p><strong>ID Credencial:</strong> <span id="cred_id"></span></p>
+        <p><strong>Emitida:</strong> <span id="cred_emitido"></span></p>
+
+        <button onclick="regenerarQR()">Regenerar QR</button>
+    </section>
+
+</div>
+
+<section class="card" id="card-turnos-hoy">
+    <h2>Turnos de hoy</h2>
+    <div id="turnos_hoy"></div>
+</section>
+
+<!-- ====================== -->
+<!--       TURNOS           -->
+<!-- ====================== -->
+<section class="card">
+    <h2>Mis Turnos</h2>
+
+    <button onclick="mostrarFormCreacion()">➕ Crear Turno</button>
+
+    <!-- FORMULARIO CREACIÓN TURNO -->
+    <div id="form-turno" style="display:none; margin-top:20px;">
+        <h3>Nuevo Turno</h3>
+
+        <div class="form-grid">
+            <label>Día:</label>
+            <select id="t_dia">
+                <option value="1">Lunes</option>
+                <option value="2">Martes</option>
+                <option value="3">Miércoles</option>
+                <option value="4">Jueves</option>
+                <option value="5">Viernes</option>
+                <option value="6">Sábado</option>
+                <option value="7">Domingo</option>
+            </select>
+
+            <label>Inicio:</label>
+            <input type="time" id="t_inicio">
+
+            <label>Fin:</label>
+            <input type="time" id="t_fin">
+
+            <label>Tolerancia:</label>
+            <input type="number" id="t_tol" value="10">
+
+            <label>Punto:</label>
+            <select id="t_punto"></select>
+
+            <label>Materia:</label>
+            <select id="t_materia"></select>
+        </div>
+
+        <button onclick="crearTurno()">Guardar</button>
+        <button onclick="ocultarForm()">Cancelar</button>
+    </div>
+
+    <!-- MODAL EDITAR TURNO -->
+    <div id="modalEditarTurno" class="modal">
+        <div class="modal-content">
+            <h3>Editar Turno</h3>
+
+            <div class="form-grid">
+                <label>Día:</label>
+                <select id="edit_dia">
+                    <option value="1">Lunes</option>
+                    <option value="2">Martes</option>
+                    <option value="3">Miércoles</option>
+                    <option value="4">Jueves</option>
+                    <option value="5">Viernes</option>
+                    <option value="6">Sábado</option>
+                    <option value="7">Domingo</option>
+                </select>
+
+                <label>Inicio:</label>
+                <input type="time" id="edit_inicio">
+
+                <label>Fin:</label>
+                <input type="time" id="edit_fin">
+
+                <label>Tolerancia:</label>
+                <input type="number" id="edit_tol">
+
+                <label>Punto:</label>
+                <select id="edit_punto"></select>
+
+                <label>Materia:</label>
+                <select id="edit_materia"></select>
+            </div>
+
+            <br>
+            <button onclick="guardarEdicionTurno()">Guardar</button>
+            <button onclick="cerrarModalEditar()">Cancelar</button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+
+
+    <h3>Turnos creados</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Día</th>
+                <th>Inicio</th>
+                <th>Fin</th>
+                <th>Punto</th>
+                <th>Materia</th>
+                <th>Acciones</th>
+            </tr>
+        </thead>
+        <tbody id="tabla_turnos"></tbody>
+    </table>
+</section>
+
+
+<script src="/frontend/public/js/qr_docente.js"></script>
+
+</body>
+</html>

@@ -1,13 +1,16 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 
-class DocenteCreate(BaseModel):
+class DocenteBase(BaseModel):
     legajo: str
     apellido: str
     nombre: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
     depto: Optional[str] = None
     activo: bool = True
+
+class DocenteCreate(DocenteBase):
+    pass
 
 class DocenteUpdate(BaseModel):
     apellido: Optional[str] = None
@@ -16,7 +19,11 @@ class DocenteUpdate(BaseModel):
     depto: Optional[str] = None
     activo: Optional[bool] = None
 
-class DocenteOut(DocenteCreate):
+class DocenteOut(DocenteBase):
     id: int
     class Config:
         from_attributes = True
+
+class DocenteQR(BaseModel):
+    credencial_id: int
+    nonce: str
