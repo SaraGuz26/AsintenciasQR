@@ -1,5 +1,7 @@
 from pydantic import BaseModel, conint
 from datetime import time
+from app.models.turno import EstadoTurno
+
 
 class TurnoBase(BaseModel):
     docente_id: int
@@ -25,6 +27,7 @@ class TurnoUpdate(BaseModel):
 
 class TurnoOut(TurnoBase):
     id: int
+    estado : EstadoTurno
     class Config:
         from_attributes = True
 
@@ -35,6 +38,26 @@ class TurnoOutFull(BaseModel):
     hora_fin: time
     tolerancia_min: int
     activo: bool
+
+    materia_id: int
+    materia_nombre: str
+
+    punto_id_plan: int
+    punto_nombre: str
+
+    class Config:
+        from_attributes = True
+
+
+class TurnoOutEditable(BaseModel):
+    id: int
+    dia_semana: int
+    hora_inicio: time
+    hora_fin: time
+    tolerancia_min: int
+    activo: bool
+
+    estado: str  # <-- solo acá lo agregamos
 
     materia_id: int
     materia_nombre: str

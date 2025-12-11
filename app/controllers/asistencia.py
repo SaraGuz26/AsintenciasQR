@@ -1,18 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 import pytz  # si usás tz
 from app.web.deps import get_db
 from app.models.asistencia import Asistencia, EstadoAsistencia, FuenteLectura
-from app.models.turno import Turno
+from app.models.turno import Turno, EstadoTurno
 from app.models.credencial import Credencial
 from app.models.docente import Docente
 from app.models.punto import Punto
-from app.models.base import Base
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from app.db.session import SessionLocal
 
 router = APIRouter(prefix="/asistencias", tags=["asistencias"])
 
-class RegistroQR(Base):
+class RegistroQR(BaseModel):
     punto_id: int
     credencial_id: int
     qr_nonce: str
@@ -87,3 +89,78 @@ def registrar_asistencia(data: RegistroQR, db: Session = Depends(get_db)):
         "turno_id": asistencia.turno_id,
         "docente": f"{docente.nombre} {docente.apellido}"
     }
+
+def cerrar_turnos_vencidos():
+    db: Session = SessionLocal()
+    try:
+        ARG = pytz.timezone("America/Argentina/Buenos_Aires")
+
+        ahora_utc = datetime.now(timezone.utc)
+        ahora_ar  = ahora_utc.astimezone(ARG)
+        dia = ahora_ar.isoweekday()
+
+        turnos = db.query(Turno).filter(
+            Turno.activo == True,
+            Turno.dia_semana == dia
+        ).all()
+
+        for turno in turnos:
+
+            # hora fin + tolerancia
+            fin_local = ARG.localize(
+                datetime.combine(ahora_ar.date(), turno.hora_fin)
+            ) + timedelta(minutes=turno.tolerancia_min or 0)
+
+            fin_utc = fin_local.astimezone(timezone.utc)
+
+            # turno aun no terminó
+            if ahora_utc < fin_utc:
+                continue
+
+            # inicio del día
+            inicio_local = ARG.localize(datetime.combine(ahora_ar.date(), time(0, 0)))
+            inicio_utc   = inicio_local.astimezone(timezone.utc)
+
+            # traer asistencias del turno HOY
+            asistencias = db.query(Asistencia).filter(
+                Asistencia.turno_id == turno.id,
+                Asistencia.ts_lectura_utc >= inicio_utc
+            ).all()
+
+            # =============================
+            # 🔥 1) SI EXISTE ALGUNA ASISTENCIA → NO CREAR AUTOMÁTICO
+            # =============================
+            if len(asistencias) > 0:
+                # cerrar solo si está en curso
+                if turno.estado != EstadoTurno.FINALIZADO:
+                    turno.estado = EstadoTurno.FINALIZADO
+                    db.add(turno)
+                continue
+
+            # =============================
+            # 🔥 2) SI NO EXISTE NINGUNA ASISTENCIA → 1 AUSENTE
+            # =============================
+            nueva = Asistencia(
+                docente_id=turno.docente_id,
+                turno_id=turno.id,
+                punto_id=turno.punto_id_plan,
+                credencial_id=None,
+                ts_lectura_utc=ahora_utc,
+                estado=EstadoAsistencia.AUSENTE,
+                motivo_texto="Ausente (cierre automático)",
+                valido=False,
+                qr_nonce="-",
+                fuente=FuenteLectura.CAMARA,
+            )
+            db.add(nueva)
+
+            turno.estado = EstadoTurno.FINALIZADO
+            db.add(turno)
+
+        db.commit()
+
+    except Exception as e:
+        print("[scheduler] Error:", e)
+        db.rollback()
+    finally:
+        db.close()

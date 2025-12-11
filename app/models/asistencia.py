@@ -4,12 +4,10 @@ from sqlalchemy.orm import relationship
 from app.models.base import Base
 
 class EstadoAsistencia(str, Enum):
-    EN_CONSULTA = "EN_CONSULTA"
+    PRESENTE = "PRESENTE"
     TARDE = "TARDE"
-    REUBICADO = "REUBICADO"
-    FUERA_DE_HORARIO = "FUERA_DE_HORARIO"
-    INVALIDO = "INVALIDO"
-
+    AUSENTE = "AUSENTE"
+    
 class FuenteLectura(str, Enum):
     LECTOR = "LECTOR"
     CAMARA = "CAMARA"

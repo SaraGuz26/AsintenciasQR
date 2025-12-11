@@ -158,3 +158,33 @@ table td, table th {
     border-radius: 50%;
     display: inline-block;
 }
+
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 8px;
+}
+
+.badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: white;
+    font-size: 0.9rem;
+}
+
+.badge-success { background: #2ecc71; }
+.badge-warning { background: #f1c40f; color:black; }
+.badge-danger { background: #e74c3c; }
+.badge-secondary { background: #7f8c8d; }
+
+input:disabled, select:disabled {
+    background: #eee;
+    color: #777;
+    cursor: not-allowed;
+}

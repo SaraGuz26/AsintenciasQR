@@ -9,14 +9,20 @@ from app.web.deps import get_db
 from app.models.docente import Docente
 from app.models.credencial import Credencial
 from app.models.asistencia import Asistencia , FuenteLectura
-from app.models.turno import Turno
+from app.models.turno import Turno, EstadoTurno
+from app.models.materia import Materia
+from app.models.punto import Punto
 import secrets
 from datetime import datetime
 from app.services.scan_service import scan_service
 import json
+import pytz
 from datetime import datetime, timezone
 from app.repositories.turno_repo import turno_repo
 from app.models.asistencia import EstadoAsistencia
+from app.schemas.turno import TurnoOutEditable
+
+ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 
 router = APIRouter(prefix="/docentes", tags=["docentes"])
@@ -122,84 +128,170 @@ def regenerar_credencial(docente_id: int, db: Session = Depends(get_db)):
 
 @router.post("/marcar-turno")
 def marcar_turno(data: DocenteQR, db: Session = Depends(get_db)):
-    # 1) Buscar credencial por ID y que no esté revocada
+
+    ARG = pytz.timezone("America/Argentina/Buenos_Aires")
+    ahora_ar = datetime.now(ARG)                    # aware local
+    ahora_utc = ahora_ar.astimezone(pytz.UTC)       # guardar en UTC
+
+    # -------------------------------------------------------
+    # 1) Buscar credencial
+    # -------------------------------------------------------
     cred = (
         db.query(Credencial)
-        .filter(
-            Credencial.id == data.credencial_id,
-            Credencial.revocado == False
-        )
+        .filter(Credencial.id == data.credencial_id, Credencial.revocado == False)
         .first()
     )
-
     if not cred:
-        raise HTTPException(status_code=404, detail="Credencial no válida")
+        raise HTTPException(404, "Credencial no válida")
 
+    # -------------------------------------------------------
     # 2) Validar nonce
+    # -------------------------------------------------------
     if cred.nonce_actual != data.nonce:
-        raise HTTPException(status_code=400, detail="QR inválido o vencido (nonce no coincide)")
+        raise HTTPException(400, "QR inválido o vencido")
 
     docente_id = cred.docente_id
-    ahora = datetime.now() 
 
-    # 3) Buscar turno vigente para este docente (usa la misma lógica que scan_service)
-    t = turno_repo.vigente_para(db, docente_id, ahora)
-    print("Turno forzado:", t)
+    # -------------------------------------------------------
+    # 3) Obtener turno vigente
+    # -------------------------------------------------------
+    t = turno_repo.vigente_para(db, docente_id, ahora_ar)
+
     if not t:
-        raise HTTPException(status_code=400, detail="El docente no tiene turno vigente en este momento")
+        raise HTTPException(400, detail="No tiene turno vigente ahora")
 
     turno, exc = t
 
-    # 4) Tomar horario efectivo (con excepción si la hubiera)
+    # -------------------------------------------------------
+    # 4) Horario real con excepciones
+    # -------------------------------------------------------
     ini = exc.hora_inicio_alt if exc and exc.hora_inicio_alt else turno.hora_inicio
     fin = exc.hora_fin_alt if exc and exc.hora_fin_alt else turno.hora_fin
     tol = turno.tolerancia_min or 0
 
-    t_hora = ahora.time()
-    minutos_ahora = t_hora.hour * 60 + t_hora.minute
-    minutos_ini = ini.hour * 60 + ini.minute
-    minutos_fin = fin.hour * 60 + fin.minute
+    minutos_ahora = ahora_ar.hour * 60 + ahora_ar.minute
+    minutos_ini   = ini.hour * 60 + ini.minute
+    minutos_fin   = fin.hour * 60 + fin.minute
 
-    # 5) Determinar estado simple para Bedelía
+    # -------------------------------------------------------
+    # 5) Determinar estado de ASISTENCIA (nuevo esquema)
+    # -------------------------------------------------------
     if minutos_ahora < minutos_ini - tol:
-        estado = "INVALIDO"
+        estado = EstadoAsistencia.AUSENTE
         motivo = "Fuera de horario (temprano)"
         valido = False
+
     elif minutos_ahora > minutos_fin:
-        estado = "INVALIDO"
+        estado = EstadoAsistencia.AUSENTE
         motivo = "Fuera de horario (tarde)"
         valido = False
+
     elif minutos_ahora > minutos_ini + tol:
-        estado = "TARDE"
-        motivo = None
-        valido = True
-    else:
-        estado = "EN_CONSULTA"   # o "Presente"
+        estado = EstadoAsistencia.TARDE
         motivo = None
         valido = True
 
-    # 6) Registrar asistencia
+    else:
+        estado = EstadoAsistencia.PRESENTE
+        motivo = None
+        valido = True
+
+    # -------------------------------------------------------
+    # 6) Prevenir duplicados HOY
+    # -------------------------------------------------------
+    inicio_hoy_ar  = datetime(ahora_ar.year, ahora_ar.month, ahora_ar.day, tzinfo=ARG)
+    inicio_hoy_utc = inicio_hoy_ar.astimezone(pytz.UTC)
+
+    ultima = (
+        db.query(Asistencia)
+        .filter(
+            Asistencia.docente_id == docente_id,
+            Asistencia.turno_id == turno.id,
+            Asistencia.ts_lectura_utc >= inicio_hoy_utc,
+        )
+        .order_by(Asistencia.ts_lectura_utc.desc())
+        .first()
+    )
+
+    # Si ya registró asistencia válida, no crear otra
+    if ultima and ultima.estado in (EstadoAsistencia.PRESENTE, EstadoAsistencia.TARDE):
+        return {
+            "ok": True,
+            "mensaje": "La asistencia ya estaba registrada",
+            "estado": ultima.estado.value,
+            "turno_id": turno.id,
+            "hora": ultima.ts_lectura_utc,
+        }
+
+    # -------------------------------------------------------
+    # 7) Registrar nueva asistencia
+    # -------------------------------------------------------
     asistencia = Asistencia(
         docente_id=docente_id,
         turno_id=turno.id,
-        punto_id=turno.punto_id_plan,  # Bedelía usa el punto planificado
-        estado=EstadoAsistencia[estado],
-        motivo_id=None,
+        punto_id=turno.punto_id_plan,
+        credencial_id=cred.id,
+        ts_lectura_utc=ahora_utc,
+        estado=estado,
         motivo_texto=motivo,
         valido=valido,
         qr_nonce=data.nonce,
-        fuente=FuenteLectura.CAMARA, 
-        ts_lectura_utc=datetime.utcnow(),
+        fuente=FuenteLectura.CAMARA,
     )
 
     db.add(asistencia)
+
+    # -------------------------------------------------------
+    # 8) Cambiar estado del turno → EN_CURSO
+    # -------------------------------------------------------
+    from app.models.turno import EstadoTurno
+
+    if turno.estado != EstadoTurno.EN_CURSO:
+        turno.estado = EstadoTurno.EN_CURSO
+        db.add(turno)
+
     db.commit()
     db.refresh(asistencia)
 
+    # -------------------------------------------------------
+    # 9) Respuesta al frontend
+    # -------------------------------------------------------
     return {
         "ok": valido,
-        "docente_id": docente_id,
+        "estado": estado.value,
         "turno_id": turno.id,
-        "estado": estado,
-        "motivo": motivo,
+        "hora_lectura_local": ahora_ar.strftime("%H:%M"),
+        "motivo": motivo
     }
+
+
+@router.get("/docente/{docente_id}", response_model=list[TurnoOutEditable])
+def por_docente(docente_id: int, db: Session = Depends(get_db)):
+    turnos = (
+        db.query(Turno, Materia, Punto)
+        .join(Materia, Materia.id == Turno.materia_id)
+        .join(Punto, Punto.id == Turno.punto_id_plan)
+        .filter(Turno.docente_id == docente_id)
+        .all()
+    )
+
+    resultado = []
+    for t, m, p in turnos:
+        resultado.append({
+            "id": t.id,
+            "dia_semana": t.dia_semana,
+            "hora_inicio": t.hora_inicio,
+            "hora_fin": t.hora_fin,
+            "tolerancia_min": t.tolerancia_min,
+            "activo": t.activo,
+
+            "estado": t.estado.value,   # <-- AQUÍ SE AGREGA
+
+            "materia_id": m.id,
+            "materia_nombre": m.nombre,
+
+            "punto_id_plan": p.id,
+            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else p.nombre
+        })
+
+    return resultado

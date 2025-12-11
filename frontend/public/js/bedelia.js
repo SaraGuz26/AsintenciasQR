@@ -1,3 +1,118 @@
+async function cargarCalendario() {
+    const vista = document.getElementById("selector-vista").value;
+    const tbody = document.getElementById("tabla-asistencias");
+
+    tbody.innerHTML = `
+        <tr><td colspan="7" class="text-center">Cargando...</td></tr>
+    `;
+
+    try {
+        const resp = await fetch("/bedelia/asistencias/calendario");
+        if (!resp.ok) throw new Error("Error al solicitar datos");
+
+        const data = await resp.json();
+
+        const lista = data[vista];
+        renderTabla(lista, vista);
+
+        document.getElementById("ultima-actualizacion").textContent =
+            new Date().toLocaleTimeString("es-AR", {
+                hour12: false,
+                timeZone: "America/Argentina/Buenos_Aires"
+            });
+
+    } catch (err) {
+        console.error(err);
+        tbody.innerHTML = `
+            <tr><td colspan="7" class="text-center text-danger">
+                Error al cargar asistencias.
+            </td></tr>
+        `;
+    }
+}
+
+
+// -----------------------------
+// Render de tabla
+// -----------------------------
+function renderTabla(lista, vista) {
+    const tbody = document.getElementById("tabla-asistencias");
+    tbody.innerHTML = "";
+
+    if (!lista || lista.length === 0) {
+        tbody.innerHTML = `
+            <tr><td colspan="7" class="text-center text-muted">
+                No hay datos para mostrar.
+            </td></tr>
+        `;
+        return;
+    }
+
+    // FUTURAS = TURNOS
+    if (vista === "futuras") {
+        lista.forEach(t => {
+            tbody.innerHTML += `
+                <tr>
+                    <td>-</td>
+                    <td>${t.docente}</td>
+                    <td>${t.materia ?? "-"}</td>
+                    <td>${t.punto ?? "-"}</td>
+
+                    <td>
+                        <span class="badge-estado estado-programado">
+                            PROGRAMADO
+                        </span>
+                    </td>
+
+                    <td>-</td>
+                    <td>${t.inicio} - ${t.fin}</td>
+                </tr>
+            `;
+        });
+        return;
+    }
+
+    // HOY / PASADAS = ASISTENCIAS
+    lista.forEach(a => {
+        const estadoClass = `estado-${a.estado.toLowerCase()}`;
+
+        tbody.innerHTML += `
+            <tr>
+                <td>${a.id}</td>
+                <td>${a.docente}</td>
+                <td>${a.materia ?? "-"}</td>
+                <td>${a.punto ?? "-"}</td>
+
+                <td>
+                    <span class="badge-estado ${estadoClass}">
+                        ${a.estado}
+                    </span>
+                </td>
+
+                <td>${a.motivo ?? "-"}</td>
+                <td>${a.hora}</td>
+            </tr>
+        `;
+    });
+}
+
+
+// -----------------------------
+// Eventos
+// -----------------------------
+document.getElementById("selector-vista")
+    .addEventListener("change", cargarCalendario);
+
+document.getElementById("btn-recargar")
+    .addEventListener("click", cargarCalendario);
+
+
+// Primera carga
+cargarCalendario();
+setInterval(cargarCalendario, 60000);  // cada 60s
+
+
+
 const API = window.location.origin;
 
 async function cargarResumen(params = {}) {
@@ -52,3 +167,5 @@ document.getElementById("btnExport").addEventListener("click", (e) => {
 // setear hoy por defecto
 document.getElementById("fecha").value = new Date().toISOString().slice(0,10);
 cargarResumen({ fecha: document.getElementById("fecha").value });
+
+

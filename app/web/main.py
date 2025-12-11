@@ -17,6 +17,9 @@ from app.controllers import auth as auth_router
 from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.error import http_error_handler
 from pathlib import Path
+from apscheduler.schedulers.background import BackgroundScheduler
+from app.controllers.asistencia import cerrar_turnos_vencidos
+import atexit
 
 
 def create_app() -> FastAPI:
@@ -55,9 +58,19 @@ def create_app() -> FastAPI:
     # Montar frontend estático:
     #  - /            -> sirve index.html
     #  - /bedelia    -> sirve bedelia.html (ver más abajo)
-    FRONT_DIR = Path(__file__).resolve().parents[2] / "frontend"
+    FRONT_DIR = Path(__file__).resolve().parents[2] / "frontend" 
     app.mount("/frontend", StaticFiles(directory=str(FRONT_DIR), html=True), name="frontend")
 
     return app
 
 app = create_app()
+
+scheduler = BackgroundScheduler()
+
+# ejecuta cada 1 minuto
+scheduler.add_job(cerrar_turnos_vencidos, "interval", minutes=1)
+
+scheduler.start()
+
+# Apagar el scheduler al terminar
+atexit.register(lambda: scheduler.shutdown())

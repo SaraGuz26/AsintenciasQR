@@ -225,22 +225,46 @@ async function cargarMaterias() {
 async function editarTurno(id) {
     turnoEditando = id;
 
-    // los selects ya se cargan en cargarPuntos()/cargarMaterias() al inicio
-    const t = await fetchJson(`/turnos/${id}`);
-    if (!t) {
-        toast("Error al cargar turno");
-        return;
-    }
+    await cargarPuntos();
+    await cargarMaterias();
 
-    document.getElementById("edit_dia").value = t.dia_semana;
-    document.getElementById("edit_inicio").value = t.hora_inicio.slice(0,5);
-    document.getElementById("edit_fin").value = t.hora_fin.slice(0,5);
-    document.getElementById("edit_tol").value = t.tolerancia_min;
-    document.getElementById("edit_punto").value = t.punto_id_plan;
+    const t = await fetchJson(`/turnos/${id}`);
+    console.log("Turno:", t);
+
+    // Seteo valores
+    document.getElementById("edit_dia").value     = t.dia_semana;
+    document.getElementById("edit_inicio").value  = t.hora_inicio.slice(0,5);
+    document.getElementById("edit_fin").value     = t.hora_fin.slice(0,5);
+    document.getElementById("edit_tol").value     = t.tolerancia_min;
+    document.getElementById("edit_punto").value   = t.punto_id_plan;
     document.getElementById("edit_materia").value = t.materia_id;
+
+    const noEditable = (t.estado === "EN_CURSO" || t.estado === "FINALIZADO");
+    console.log("¿Debe deshabilitarse?", noEditable);
+
+    const campos = [
+        "edit_dia",
+        "edit_inicio",
+        "edit_fin",
+        "edit_tol",
+        "edit_punto",
+        "edit_materia",
+    ];
+
+    campos.forEach(idCampo => {
+        const el = document.getElementById(idCampo);
+        console.log("Campo:", idCampo, "→", el);
+
+        if (el) el.disabled = noEditable;  // FORZADO
+    });
+
+    const btnGuardar = document.getElementById("btn_guardar_edicion");
+    if (btnGuardar) btnGuardar.disabled = noEditable;
 
     document.getElementById("modalEditarTurno").style.display = "flex";
 }
+
+
 
 // ==============================
 // Guardar cambios de turno
