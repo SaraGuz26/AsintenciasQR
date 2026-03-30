@@ -2,27 +2,28 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from app.repositories.turno_repo import turno_repo
 from app.schemas.turno import TurnoCreate, TurnoUpdate
-from app.models.turno import Turno
+from sqlalchemy.orm import Session
+from fastapi import HTTPException
+from app.models.turno_base import TurnoBase
+from app.models.turno_instancia import TurnoInstancia, EstadoTurnoInstancia
+from app.models.asistencia import EstadoAsistencia, Asistencia, FuenteLectura
+import pytz
+from datetime import datetime
 
 class TurnoService:
 
-    def list(self, db: Session):
-        return turno_repo.list(db)
-
     def create(self, db: Session, data: TurnoCreate):
 
-        # --- Validación 1: fin > inicio ---
         if data.hora_fin <= data.hora_inicio:
             raise HTTPException(400, "La hora de fin debe ser mayor que la hora de inicio.")
 
-        # --- Validación 2: solapamiento ---
         overlap = (
-            db.query(Turno)
+            db.query(TurnoBase)
             .filter(
-                Turno.docente_id == data.docente_id,
-                Turno.dia_semana == data.dia_semana,
-                Turno.hora_inicio < data.hora_fin,
-                Turno.hora_fin > data.hora_inicio
+                TurnoBase.docente_id == data.docente_id,
+                TurnoBase.dia_semana == data.dia_semana,
+                TurnoBase.hora_inicio < data.hora_fin,
+                TurnoBase.hora_fin > data.hora_inicio
             )
             .first()
         )
@@ -30,40 +31,135 @@ class TurnoService:
         if overlap:
             raise HTTPException(400, "Este horario se superpone con otro turno existente.")
 
-        return turno_repo.create(db, data)
+        obj = TurnoBase(**data.model_dump())
+        db.add(obj)
+        db.flush()  # 🔥 necesario para obtener obj.id
 
-    def update(self, db: Session, id: int, data: TurnoUpdate):
-        obj = turno_repo.get(db, id)
-        if not obj:
-            return None
+        # CREAR INSTANCIA + ASISTENCIA (solo hoy)
 
-        # determinar horarios según inputs
-        hora_inicio = data.hora_inicio or obj.hora_inicio
-        hora_fin = data.hora_fin or obj.hora_fin
+        ARG = pytz.timezone("America/Argentina/Buenos_Aires")
 
-        # --- Validación 1: fin > inicio ---
-        if hora_fin <= hora_inicio:
-            raise HTTPException(400, "La hora de fin debe ser mayor que la hora de inicio.")
+        ahora_ar = datetime.now(ARG)
+        dia_hoy = ahora_ar.isoweekday()
 
-        # --- Validación 2: solapamiento ---
-        overlap = (
-            db.query(Turno)
-            .filter(
-                Turno.docente_id == obj.docente_id,
-                Turno.dia_semana == (data.dia_semana or obj.dia_semana),
-                Turno.hora_inicio < hora_fin,
-                Turno.hora_fin > hora_inicio,
-                Turno.id != obj.id
+        if data.dia_semana == dia_hoy:
+
+            ahora_min = ahora_ar.hour * 60 + ahora_ar.minute
+            ini_min = data.hora_inicio.hour * 60 + data.hora_inicio.minute
+            fin_min = data.hora_fin.hour * 60 + data.hora_fin.minute
+
+            # 🔹 estado del turno
+            if ahora_min < ini_min:
+                estado_turno = EstadoTurnoInstancia.PROGRAMADO
+
+            elif ini_min <= ahora_min < fin_min:
+                estado_turno = EstadoTurnoInstancia.EN_CURSO
+
+            else:
+                estado_turno = EstadoTurnoInstancia.FINALIZADO
+
+            # crear instancia
+            ti = TurnoInstancia(
+                turno_base_id=obj.id,
+                fecha=ahora_ar.date(),
+                estado=estado_turno,
+                punto_id_real=obj.punto_id_plan
             )
-            .first()
+
+            if estado_turno == EstadoTurnoInstancia.EN_CURSO:
+                ti.inicio_real_utc = datetime.utcnow()
+
+            if estado_turno == EstadoTurnoInstancia.FINALIZADO:
+                ti.fin_real_utc = datetime.utcnow()
+
+            db.add(ti)
+            db.flush()
+
+        # 🔹 guardar todo
+        db.commit()
+        db.refresh(obj)
+
+        return obj
+
+def update(self, db: Session, id: int, data: TurnoUpdate):
+    
+    from datetime import datetime
+    ARG = pytz.timezone("America/Argentina/Buenos_Aires")
+
+    obj = db.query(TurnoBase).filter(TurnoBase.id == id).first()
+    if not obj:
+        raise HTTPException(404, "No existe")
+
+    ahora_ar = datetime.now(ARG)
+    hoy = ahora_ar.date()
+
+    # 🔹 VALIDACIÓN: no modificar si ya pasó o está en curso
+    ti = db.query(TurnoInstancia).filter(
+        TurnoInstancia.turno_base_id == obj.id,
+        TurnoInstancia.fecha == hoy
+    ).first()
+
+    if ti and ti.estado in [EstadoTurnoInstancia.EN_CURSO, EstadoTurnoInstancia.FINALIZADO]:
+        raise HTTPException(400, "No se puede modificar un turno en curso o finalizado")
+
+    # 🔹 VALIDACIONES
+    hora_inicio = data.hora_inicio or obj.hora_inicio
+    hora_fin = data.hora_fin or obj.hora_fin
+    dia = data.dia_semana or obj.dia_semana
+
+    if hora_fin <= hora_inicio:
+        raise HTTPException(400, "Hora fin inválida")
+
+    overlap = db.query(TurnoBase).filter(
+        TurnoBase.docente_id == obj.docente_id,
+        TurnoBase.dia_semana == dia,
+        TurnoBase.hora_inicio < hora_fin,
+        TurnoBase.hora_fin > hora_inicio,
+        TurnoBase.id != obj.id
+    ).first()
+
+    if overlap:
+        raise HTTPException(400, "Se superpone")
+
+    # 🔹 UPDATE
+    for k, v in data.model_dump(exclude_unset=True).items():
+        setattr(obj, k, v)
+
+    db.flush()
+
+    # CALCULAR ESTADO DE INSTANCIA
+    ahora_min = ahora_ar.hour * 60 + ahora_ar.minute
+    ini_min = hora_inicio.hour * 60 + hora_inicio.minute
+    fin_min = hora_fin.hour * 60 + hora_fin.minute
+
+    if ahora_min < ini_min:
+        estado = EstadoTurnoInstancia.PROGRAMADO
+    elif ini_min <= ahora_min < fin_min:
+        estado = EstadoTurnoInstancia.EN_CURSO
+    else:
+        estado = EstadoTurnoInstancia.FINALIZADO
+
+    if not ti:
+        ti = TurnoInstancia(
+            turno_base_id=obj.id,
+            fecha=hoy,
+            estado=estado,
+            punto_id_real=obj.punto_id_plan
         )
+        db.add(ti)
+    else:
+        ti.estado = estado
 
-        if overlap:
-            raise HTTPException(400, "Este turno se superpone con otro existente.")
+    if estado == EstadoTurnoInstancia.EN_CURSO and not ti.inicio_real_utc:
+        ti.inicio_real_utc = datetime.utcnow()
 
-        return turno_repo.update(db, obj, data)
+    if estado == EstadoTurnoInstancia.FINALIZADO and not ti.fin_real_utc:
+        ti.fin_real_utc = datetime.utcnow()
 
-    def remove(self, db: Session, id: int):
-        return turno_repo.remove(db, id)
+    db.add(ti)
 
+    db.commit()
+    db.refresh(obj)
+
+    return obj
 turno_service = TurnoService()

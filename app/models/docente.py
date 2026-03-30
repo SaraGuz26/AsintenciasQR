@@ -13,6 +13,6 @@ class Docente(Base):
     depto = Column(String(120))
     activo = Column(Boolean, nullable=False, default=True)
 
-    turnos = relationship("Turno", back_populates="docente")
+    turnos_base = relationship("TurnoBase", back_populates="docente")
     credenciales = relationship("Credencial", back_populates="docente")
     asistencias = relationship("Asistencia", back_populates="docente")

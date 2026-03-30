@@ -4,6 +4,6 @@ Base = declarative_base()
 # IMPORTANTE: estos imports traen los modelos a memoria,
 # así SQLAlchemy conoce TODAS las clases antes de mapear.
 from app.models import (
-    docente, credencial, materia, punto, turno, turno_excepcion,
+    docente, credencial, materia, punto, turno_base, turno_excepcion,
     asistencia, motivo, usuario
 ) 

@@ -10,4 +10,4 @@ class Materia(Base):
     nombre = Column(String(160), nullable=False)
     activo = Column(Boolean, nullable=False, default=True)
 
-    turnos = relationship("Turno", back_populates="materia")
+    turnos_base = relationship("TurnoBase", back_populates="materia")

@@ -9,4 +9,4 @@ class Motivo(Base):
     codigo = Column(String(32), unique=True)
     descripcion = Column(String(160), nullable=False)
 
-    asistencias = relationship("Asistencia", back_populates="motivo")
+    #asistencias = relationship("Asistencia", back_populates="motivo")

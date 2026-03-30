@@ -1,11 +1,26 @@
-const DOCENTE_ID = 1;  // TODO: reemplazar con el del login real
+// --- Auth ---
+const token = localStorage.getItem("token");
+if (!token) window.location.href = "./index.html";
+
+const HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+};
+
+let DOCENTE_ID = null;  // se carga desde /docentes/me
 let turnoEditando = null;
 
 // ==============================
 // Helper para fetch con JSON
 // ==============================
-async function fetchJson(url, options) {
+async function fetchJson(url, options = {}) {
+    options.headers = { ...HEADERS, ...(options.headers || {}) };
     const resp = await fetch(url, options);
+    if (resp.status === 401 || resp.status === 403) {
+        localStorage.clear();
+        window.location.href = "./index.html";
+        return null;
+    }
     if (!resp.ok) {
         console.error("Error en fetch", url, resp.status);
         return null;
@@ -34,12 +49,19 @@ function toast(msg) {
 // Cargar datos del docente
 // ==============================
 async function cargarDocente() {
-    const d = await fetchJson(`/docentes/${DOCENTE_ID}`);
+    const d = await fetchJson(`/docentes/me`);
     if (!d) return;
+
+    DOCENTE_ID = d.id;  // guardamos el ID real para el resto de llamadas
 
     document.getElementById("doc_nombre").textContent = d.nombre + " " + d.apellido;
     document.getElementById("doc_legajo").textContent = d.legajo;
     document.getElementById("doc_email").textContent = d.email;
+
+    // recién tenemos DOCENTE_ID, cargamos el resto
+    await cargarCredencial();
+    await cargarTurnos();
+    await cargarTurnosHoy();
 }
 
 // ==============================
@@ -63,7 +85,10 @@ async function cargarCredencial() {
 }
 
 async function regenerarQR() {
-    await fetch(`/docentes/${DOCENTE_ID}/credencial/regenerar`, { method: "POST" });
+    await fetch(`/docentes/${DOCENTE_ID}/credencial/regenerar`, {
+        method: "POST",
+        headers: HEADERS
+    });
     await cargarCredencial();
     toast("QR regenerado");
 }
@@ -142,7 +167,7 @@ async function crearTurno() {
 
     const res = await fetch(`/turnos`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: HEADERS,
         body: JSON.stringify(payload)
     });
 
@@ -167,7 +192,9 @@ async function eliminarTurno(id) {
         return;
     }
 
-    const r = await fetch(`/turnos/${id}`, { method: "DELETE" });
+    const r = await fetch(`/turnos/${id}`, { 
+        method: "DELETE", 
+        headers: HEADERS });
 
     if (r.ok) {
         toast("Turno eliminado");
@@ -291,7 +318,7 @@ async function guardarEdicionTurno() {
 
     const res = await fetch(`/turnos/${turnoEditando}`, {
         method: "PUT",
-        headers: {"Content-Type": "application/json"},
+        headers: HEADERS,
         body: JSON.stringify(data)
     });
 
@@ -370,8 +397,5 @@ function diaNombre(n) {
 // Inicialización del panel
 // ==============================
 cargarDocente();
-cargarCredencial();
 cargarPuntos();
 cargarMaterias();
-cargarTurnos();
-cargarTurnosHoy();

@@ -8,24 +8,31 @@ from sqlalchemy.orm import Session
 from app.web.deps import get_db
 from app.models.docente import Docente
 from app.models.credencial import Credencial
-from app.models.asistencia import Asistencia , FuenteLectura
-from app.models.turno import Turno, EstadoTurno
+from app.models.asistencia import Asistencia , FuenteLectura, EstadoAsistencia
+from app.models.turno_instancia import TurnoInstancia, EstadoTurnoInstancia
+from app.models.turno_base import TurnoBase
 from app.models.materia import Materia
 from app.models.punto import Punto
 import secrets
 from datetime import datetime
-from app.services.scan_service import scan_service
 import json
 import pytz
 from datetime import datetime, timezone
 from app.repositories.turno_repo import turno_repo
 from app.models.asistencia import EstadoAsistencia
 from app.schemas.turno import TurnoOutEditable
+from app.web.deps import get_current_docente  
 
 ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 
 router = APIRouter(prefix="/docentes", tags=["docentes"])
+
+# --- Ruta para el docente logueado ---
+@router.get("/me", response_model=DocenteOut)
+def mi_perfil(docente: Docente = Depends(get_current_docente)):
+    """Devuelve el perfil del docente autenticado via JWT."""
+    return docente
 
 @router.get("", response_model=list[DocenteOut])
 def listar(db: Session = Depends(get_db)):
@@ -125,17 +132,13 @@ def regenerar_credencial(docente_id: int, db: Session = Depends(get_db)):
         "nonce": cred.nonce_actual
     }
 
-
 @router.post("/marcar-turno")
 def marcar_turno(data: DocenteQR, db: Session = Depends(get_db)):
 
-    ARG = pytz.timezone("America/Argentina/Buenos_Aires")
-    ahora_ar = datetime.now(ARG)                    # aware local
-    ahora_utc = ahora_ar.astimezone(pytz.UTC)       # guardar en UTC
+    ahora_ar = datetime.now(ARG_TZ)          # aware AR
+    ahora_utc = ahora_ar.astimezone(pytz.UTC)
 
-    # -------------------------------------------------------
-    # 1) Buscar credencial
-    # -------------------------------------------------------
+    # Buscar credencial activa
     cred = (
         db.query(Credencial)
         .filter(Credencial.id == data.credencial_id, Credencial.revocado == False)
@@ -144,92 +147,100 @@ def marcar_turno(data: DocenteQR, db: Session = Depends(get_db)):
     if not cred:
         raise HTTPException(404, "Credencial no válida")
 
-    # -------------------------------------------------------
-    # 2) Validar nonce
-    # -------------------------------------------------------
+    # Validar nonce
     if cred.nonce_actual != data.nonce:
         raise HTTPException(400, "QR inválido o vencido")
 
     docente_id = cred.docente_id
 
-    # -------------------------------------------------------
-    # 3) Obtener turno vigente
-    # -------------------------------------------------------
+    # Obtener TurnoBase vigente 
+    # Debe devolver: (turno_base, exc) o None
     t = turno_repo.vigente_para(db, docente_id, ahora_ar)
-
     if not t:
         raise HTTPException(400, detail="No tiene turno vigente ahora")
 
-    turno, exc = t
+    turno_base, exc = t
 
-    # -------------------------------------------------------
-    # 4) Horario real con excepciones
-    # -------------------------------------------------------
-    ini = exc.hora_inicio_alt if exc and exc.hora_inicio_alt else turno.hora_inicio
-    fin = exc.hora_fin_alt if exc and exc.hora_fin_alt else turno.hora_fin
-    tol = turno.tolerancia_min or 0
+    # 4) Horario real del día (si hay excepción)
+    ini = exc.hora_inicio_alt if exc and exc.hora_inicio_alt else turno_base.hora_inicio
+    fin = exc.hora_fin_alt if exc and exc.hora_fin_alt else turno_base.hora_fin
+    tol = turno_base.tolerancia_min or 0
 
     minutos_ahora = ahora_ar.hour * 60 + ahora_ar.minute
-    minutos_ini   = ini.hour * 60 + ini.minute
-    minutos_fin   = fin.hour * 60 + fin.minute
+    minutos_ini = ini.hour * 60 + ini.minute
+    minutos_fin = fin.hour * 60 + fin.minute
 
-    # -------------------------------------------------------
-    # 5) Determinar estado de ASISTENCIA (nuevo esquema)
-    # -------------------------------------------------------
+    # 5) Determinar estado asistencia (igual que antes)
     if minutos_ahora < minutos_ini - tol:
         estado = EstadoAsistencia.AUSENTE
         motivo = "Fuera de horario (temprano)"
         valido = False
-
     elif minutos_ahora > minutos_fin:
         estado = EstadoAsistencia.AUSENTE
         motivo = "Fuera de horario (tarde)"
         valido = False
-
     elif minutos_ahora > minutos_ini + tol:
         estado = EstadoAsistencia.TARDE
         motivo = None
         valido = True
-
     else:
         estado = EstadoAsistencia.PRESENTE
         motivo = None
         valido = True
 
-    # -------------------------------------------------------
-    # 6) Prevenir duplicados HOY
-    # -------------------------------------------------------
-    inicio_hoy_ar  = datetime(ahora_ar.year, ahora_ar.month, ahora_ar.day, tzinfo=ARG)
-    inicio_hoy_utc = inicio_hoy_ar.astimezone(pytz.UTC)
+    # 6) Obtener o crear TurnoInstancia del día (fecha local AR)
+    fecha_ar = ahora_ar.date()
 
+    punto_real_id = (
+        exc.punto_id_alt if (exc and getattr(exc, "punto_id_alt", None)) else turno_base.punto_id_plan
+    )
+
+    ti = (
+        db.query(TurnoInstancia)
+        .filter(TurnoInstancia.turno_base_id == turno_base.id,
+                TurnoInstancia.fecha == fecha_ar)
+        .first()
+    )
+
+    if not ti:
+        ti = TurnoInstancia(
+            turno_base_id=turno_base.id,
+            fecha=fecha_ar,
+            estado=EstadoTurnoInstancia.PROGRAMADO,
+            punto_id_real=punto_real_id,
+        )
+        db.add(ti)
+        db.flush()  # para tener ti.id sin commit
+
+    # si cambió el punto por excepción y la instancia estaba con el plan viejo
+    if ti.punto_id_real != punto_real_id:
+        ti.punto_id_real = punto_real_id
+        db.add(ti)
+
+    # 7) Prevenir duplicados por instancia (no por turno_base)
     ultima = (
         db.query(Asistencia)
         .filter(
-            Asistencia.docente_id == docente_id,
-            Asistencia.turno_id == turno.id,
-            Asistencia.ts_lectura_utc >= inicio_hoy_utc,
+            Asistencia.turno_instancia_id == ti.id,
         )
         .order_by(Asistencia.ts_lectura_utc.desc())
         .first()
     )
 
-    # Si ya registró asistencia válida, no crear otra
     if ultima and ultima.estado in (EstadoAsistencia.PRESENTE, EstadoAsistencia.TARDE):
         return {
             "ok": True,
             "mensaje": "La asistencia ya estaba registrada",
             "estado": ultima.estado.value,
-            "turno_id": turno.id,
-            "hora": ultima.ts_lectura_utc,
+            "turno_instancia_id": ti.id,
+            "hora_lectura_local": ahora_ar.strftime("%H:%M"),
         }
 
-    # -------------------------------------------------------
-    # 7) Registrar nueva asistencia
-    # -------------------------------------------------------
+    # 8) Crear asistencia (punto del día = punto_real de instancia)
     asistencia = Asistencia(
         docente_id=docente_id,
-        turno_id=turno.id,
-        punto_id=turno.punto_id_plan,
+        punto_id=ti.punto_id_real,
+        turno_instancia_id=ti.id,
         credencial_id=cred.id,
         ts_lectura_utc=ahora_utc,
         estado=estado,
@@ -238,60 +249,53 @@ def marcar_turno(data: DocenteQR, db: Session = Depends(get_db)):
         qr_nonce=data.nonce,
         fuente=FuenteLectura.CAMARA,
     )
-
     db.add(asistencia)
 
-    # -------------------------------------------------------
-    # 8) Cambiar estado del turno → EN_CURSO
-    # -------------------------------------------------------
-    from app.models.turno import EstadoTurno
-
-    if turno.estado != EstadoTurno.EN_CURSO:
-        turno.estado = EstadoTurno.EN_CURSO
-        db.add(turno)
+    # 9) Actualizar estado instancia si corresponde
+    if valido and estado in (EstadoAsistencia.PRESENTE, EstadoAsistencia.TARDE):
+        if ti.estado != EstadoTurnoInstancia.EN_CURSO:
+            ti.estado = EstadoTurnoInstancia.EN_CURSO
+        if not ti.inicio_real_utc:
+            ti.inicio_real_utc = ahora_utc
+        db.add(ti)
 
     db.commit()
     db.refresh(asistencia)
 
-    # -------------------------------------------------------
-    # 9) Respuesta al frontend
-    # -------------------------------------------------------
     return {
         "ok": valido,
         "estado": estado.value,
-        "turno_id": turno.id,
+        "turno_instancia_id": ti.id,
         "hora_lectura_local": ahora_ar.strftime("%H:%M"),
-        "motivo": motivo
+        "motivo": motivo,
     }
 
 
-@router.get("/docente/{docente_id}", response_model=list[TurnoOutEditable])
+@router.get("/docente/{docente_id}")
 def por_docente(docente_id: int, db: Session = Depends(get_db)):
-    turnos = (
-        db.query(Turno, Materia, Punto)
-        .join(Materia, Materia.id == Turno.materia_id)
-        .join(Punto, Punto.id == Turno.punto_id_plan)
-        .filter(Turno.docente_id == docente_id)
+
+    rows = (
+        db.query(TurnoBase, Materia, Punto)
+        .join(Materia, Materia.id == TurnoBase.materia_id)
+        .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+        .filter(TurnoBase.docente_id == docente_id)
         .all()
     )
 
-    resultado = []
-    for t, m, p in turnos:
-        resultado.append({
-            "id": t.id,
-            "dia_semana": t.dia_semana,
-            "hora_inicio": t.hora_inicio,
-            "hora_fin": t.hora_fin,
-            "tolerancia_min": t.tolerancia_min,
-            "activo": t.activo,
-
-            "estado": t.estado.value,   # <-- AQUÍ SE AGREGA
+    return [
+        {
+            "id": tb.id,
+            "dia_semana": tb.dia_semana,
+            "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
+            "hora_fin": tb.hora_fin.strftime("%H:%M"),
+            "tolerancia_min": tb.tolerancia_min,
+            "activo": tb.activo,
 
             "materia_id": m.id,
             "materia_nombre": m.nombre,
 
             "punto_id_plan": p.id,
-            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else p.nombre
-        })
-
-    return resultado
+            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", ""),
+        }
+        for (tb, m, p) in rows
+    ]

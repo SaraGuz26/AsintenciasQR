@@ -9,16 +9,16 @@ from app.controllers import punto as punto_router
 from app.controllers import turno as turno_router
 from app.controllers import turno_excepcion as turno_exc_router
 from app.controllers import credencial as cred_router
-from app.controllers import scan as scan_router
 from app.controllers import publico as publico_router
 from app.controllers import bedelia as bedelia_router
 from app.controllers import materia as materias_router
+from app.tests import test as test_router
 from app.controllers import auth as auth_router
 from app.middleware.request_id import RequestIdMiddleware
 from app.middleware.error import http_error_handler
 from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.controllers.asistencia import cerrar_turnos_vencidos
+from app.controllers.asistencia import cerrar_turnos_vencidos, generar_instancias_del_dia
 import atexit
 
 
@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
     # CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=s.CORS_ORIGINS,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -45,12 +45,11 @@ def create_app() -> FastAPI:
     app.include_router(turno_router.router)
     app.include_router(turno_exc_router.router)
     app.include_router(cred_router.router)
-    app.include_router(scan_router.router)
     app.include_router(publico_router.router)
     app.include_router(bedelia_router.router)
     app.include_router(auth_router.router)
     app.include_router(materias_router.router)
-    
+    app.include_router(test_router.router)
 
     # Error handler genérico
     app.add_exception_handler(Exception, http_error_handler)
@@ -69,6 +68,9 @@ scheduler = BackgroundScheduler()
 
 # ejecuta cada 1 minuto
 scheduler.add_job(cerrar_turnos_vencidos, "interval", minutes=1)
+
+# Ejecuta a las 00hs
+scheduler.add_job(generar_instancias_del_dia,"cron",hour=0,minute=0)
 
 scheduler.start()
 

@@ -90,7 +90,7 @@ function renderTabla(lista, vista) {
                 </td>
 
                 <td>${a.motivo ?? "-"}</td>
-                <td>${a.hora}</td>
+                <td>${a.hora_inicio} - ${a.hora_fin}</td>
             </tr>
         `;
     });
