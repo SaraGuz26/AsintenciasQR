@@ -15,6 +15,20 @@ ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 router = APIRouter(prefix="/bedelia", tags=["bedelia"])
 
+def obtener_dia_es(fecha):
+    try:
+        return {
+            "Monday": "Lunes",
+            "Tuesday": "Martes",
+            "Wednesday": "Miércoles",
+            "Thursday": "Jueves",
+            "Friday": "Viernes",
+            "Saturday": "Sábado",
+            "Sunday": "Domingo",
+        }[fecha.strftime("%A")]
+    except KeyError:
+        return ""
+
 def obtener_turnos_futuros(db: Session, hoy_ar):
 
     futuras = []
@@ -46,7 +60,8 @@ def obtener_turnos_futuros(db: Session, hoy_ar):
                 "hora_fin": tb.hora_fin.strftime("%H:%M"),
                 "estado": "PROGRAMADO",
                 "motivo": "-",
-                "hora": "-"
+                "hora": "-",
+                "dia_semana": obtener_dia_es(fecha)
             })
 
     return futuras
@@ -82,7 +97,7 @@ def obtener_turnos_pasados(db: Session, hoy_ar):
                 "punto": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", "-"),
                 "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
                 "hora_fin": tb.hora_fin.strftime("%H:%M"),
-                "estado": "FINALIZADO (AUSENTE)",  # 🔥 default
+                "estado": "FINALIZADO (AUSENTE)",  # por defecto
                 "motivo": "-",
                 "hora": "-"
             })
@@ -152,6 +167,7 @@ def asistencias_calendario(db: Session = Depends(get_db)):
         return {
             "id": ti.id,
             "fecha": ti.fecha.strftime("%Y-%m-%d"),
+            "dia_semana": obtener_dia_es(ti.fecha),
 
             "docente": f"{d.nombre} {d.apellido}",
             "materia": m.nombre if m else "-",
@@ -170,6 +186,10 @@ def asistencias_calendario(db: Session = Depends(get_db)):
 
     return {
         "hoy": [instancia_to_dict(ti, tb, d, p, m) for (ti, tb, d, p, m) in inst_hoy],
-        "pasadas": inst_pasadas,
-        "futuras": inst_futuras,
+        "pasadas": [
+            instancia_to_dict(ti, tb, d, p, m)
+            for (ti, tb, d, p, m) in inst_pasadas
+        ],
+        "futuras": inst_futuras
+        ,
     }

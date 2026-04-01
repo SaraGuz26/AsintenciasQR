@@ -1,6 +1,6 @@
 // --- Auth ---
 const token = localStorage.getItem("token");
-if (!token) window.location.href = "./index.html";
+if (!token) window.location.href = "/frontend/bedelia/login.html";
 
 const HEADERS = {
     "Content-Type": "application/json",
@@ -10,21 +10,27 @@ const HEADERS = {
 let DOCENTE_ID = null;  // se carga desde /docentes/me
 let turnoEditando = null;
 
+const API = window.location.origin;
 // ==============================
 // Helper para fetch con JSON
 // ==============================
 async function fetchJson(url, options = {}) {
     options.headers = { ...HEADERS, ...(options.headers || {}) };
-    const resp = await fetch(url, options);
+
+    const resp = await fetch(API + url, options); 
+
     if (resp.status === 401 || resp.status === 403) {
+        console.log("403 → token inválido o no autorizado");
         localStorage.clear();
-        window.location.href = "./index.html";
+        window.location.href = "/frontend/bedelia/login.html";
         return null;
     }
+
     if (!resp.ok) {
         console.error("Error en fetch", url, resp.status);
         return null;
     }
+
     return await resp.json();
 }
 

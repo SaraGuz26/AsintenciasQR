@@ -55,7 +55,7 @@ def get_current_docente(
     if user.rol != "DOCENTE":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso solo para docentes")
 
-    docente = db.query(Docente).filter(Docente.email == user.email).first()
+    docente = db.query(Docente).filter(Docente.usuario_id == user.id).first()
     if not docente or not docente.activo:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Docente no encontrado o inactivo")
 
