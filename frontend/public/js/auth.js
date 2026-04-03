@@ -1,14 +1,14 @@
 const API_URL = "http://127.0.0.1:8000";
 
-export function guardarToken(token) {
+function guardarToken(token) {
     localStorage.setItem("token", token);
 }
 
-export function obtenerToken() {
+function obtenerToken() {
     return localStorage.getItem("token");
 }
 
-export function fetchAuth(url, options = {}) {
+function fetchAuth(url, options = {}) {
     const token = obtenerToken();
 
     return fetch(API_URL + url, {
@@ -19,4 +19,11 @@ export function fetchAuth(url, options = {}) {
             "Authorization": "Bearer " + token
         }
     });
+}
+
+function logout() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("rol");
+
+    window.location.href = "/frontend/bedelia/login.html";
 }

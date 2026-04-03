@@ -1,3 +1,9 @@
+const token = localStorage.getItem("token");
+
+if (!token) {
+    window.location.href = "/frontend/bedelia/login.html";
+}
+
 // Variables de paginaciom
 
 let paginaActual = 1;
@@ -6,7 +12,7 @@ let listaActual = [];
 
 // Para poner etiquetas coloquiales de fecha
 function formatearFechaColoquial(fechaStr) {
-    const fecha = new Date(fechaStr);
+    const fecha = new Date(fechaStr + "T00:00:00");
     const hoy = new Date();
 
     // limpiar horas
@@ -25,7 +31,7 @@ function formatearFechaColoquial(fechaStr) {
 // Darle colores al calendario
 
 function claseBadgeFecha(fechaStr) {
-    const fecha = new Date(fechaStr);
+    const fecha = new Date(fechaStr + "T00:00:00");
     const hoy = new Date();
 
     hoy.setHours(0,0,0,0);
@@ -54,7 +60,7 @@ function claseEstado(estado) {
 
 //Para las etiquetas de las fechas futuras coloquiales
 function etiquetaFechaFutura(fechaStr) {
-    const fecha = new Date(fechaStr);
+    const fecha = new Date(fechaStr + "T00:00:00");
     const hoy = new Date();
 
     hoy.setHours(0,0,0,0);

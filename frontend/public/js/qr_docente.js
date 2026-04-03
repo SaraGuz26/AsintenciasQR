@@ -9,6 +9,7 @@ const HEADERS = {
 
 let DOCENTE_ID = null;  // se carga desde /docentes/me
 let turnoEditando = null;
+let turnosOriginal= []; // Para vistas
 
 const API = window.location.origin;
 // ==============================
@@ -120,13 +121,18 @@ function ocultarForm() {
     document.getElementById("t_materia").value = "";
 }
 
-// ==============================
+
 // Listar turnos del docente
-// ==============================
 async function cargarTurnos() {
     const lista = await fetchJson(`/turnos/docente/${DOCENTE_ID}`);
     if (!lista) return;
 
+    turnosOriginal = lista;
+    renderTurnos(lista);
+}
+
+// Cargar Turnos y renderizar
+function renderTurnos(lista) {
     const tbody = document.getElementById("tabla_turnos");
     tbody.innerHTML = "";
 
@@ -139,14 +145,28 @@ async function cargarTurnos() {
             <td>${t.punto_nombre}</td>
             <td>${t.materia_nombre}</td>
             <td>
-                <button onclick="editarTurno(${t.id})">Editar</button>
-                <button onclick="eliminarTurno(${t.id})">Eliminar</button>
+                <div class="acciones">
+                    <button class="btn-editar" onclick="editarTurno(${t.id})">Editar</button>
+                    <button class="btn-eliminar" onclick="eliminarTurno(${t.id})">Eliminar</button>
+                </div>
             </td>
         `;
         tbody.appendChild(tr);
     });
 }
 
+// Cambiar Vista de dias de los turnos
+function cambiarVista(dia) {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    event.target.classList.add("active");
+
+    if (dia === "todos") {
+        renderTurnos(turnosOriginal);
+    } else {
+        const filtrados = turnosOriginal.filter(t => t.dia_semana === dia);
+        renderTurnos(filtrados);
+    }
+}
 // ==============================
 // Crear turno
 // ==============================

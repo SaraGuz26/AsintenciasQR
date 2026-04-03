@@ -119,3 +119,62 @@ def consultas_publicas(dia: str = "hoy", db: Session = Depends(get_db)):
         })
 
     return resultado
+
+@router.get("/consultas/semana")
+def consultas_semana(db: Session = Depends(get_db)):
+
+    ahora_ar = datetime.now(ARG_TZ)
+
+    turnos = (
+        db.query(TurnoBase, Docente, Materia, Punto)
+        .join(Docente, Docente.id == TurnoBase.docente_id)
+        .join(Materia, Materia.id == TurnoBase.materia_id)
+        .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+        .filter(TurnoBase.activo == True)
+        .all()
+    )
+
+    resultado = []
+    for tb, d, m, p_plan in turnos:
+
+        instancia = (
+            db.query(TurnoInstancia)
+            .filter(
+                TurnoInstancia.turno_base_id == tb.id,
+                TurnoInstancia.fecha == ahora_ar.date()
+            )
+            .first()
+        )
+
+        estado = "PROGRAMADO"
+        hora_registro = "-"
+
+        if instancia:
+            ultima = (
+                db.query(Asistencia)
+                .filter(Asistencia.turno_instancia_id == instancia.id)
+                .order_by(Asistencia.ts_lectura_utc.desc())
+                .first()
+            )
+
+            if ultima:
+                ts = ultima.ts_lectura_utc
+                if ts.tzinfo is None:
+                    ts = pytz.UTC.localize(ts)
+                hora_registro = ts.astimezone(ARG_TZ).strftime("%H:%M")
+                estado = ultima.estado.value
+            else:
+                estado = instancia.estado.value
+
+        resultado.append({
+            "docente": f"{d.nombre} {d.apellido}",
+            "materia": m.nombre,
+            "punto": getattr(p_plan, "etiqueta", getattr(p_plan, "nombre", "-")),
+            "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
+            "hora_fin": tb.hora_fin.strftime("%H:%M"),
+            "estado": estado,
+            "hora_registro": hora_registro,
+            "dia_semana": tb.dia_semana  # 👈 CLAVE
+        })
+
+    return resultado

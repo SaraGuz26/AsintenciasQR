@@ -17,13 +17,13 @@
 
       <form id="loginForm">
         <div class="mb-3">
-          <label class="form-label">Email</label>
-          <input class="form-control" type="email" id="email"/>
+          <label class="form-label">Email:</label>
+          <input class="form-control" type="email" id="email" autocomplete="username" placeholder="Ingrese email" required/>
         </div>
 
         <div class="mb-3">
-          <label class="form-label">Contraseña</label>
-          <input class="form-control" type="password" id="password"/>
+          <label class="form-label">Contraseña:</label>
+          <input class="form-control" type="password" id="password" autocomplete="current-password" placeholder="Ingrese contraseña" required/>
         </div>
 
         <button class="btn btn-primary w-100" type="submit">Ingresar</button>
@@ -36,7 +36,7 @@
 </div>
 
 <script>
-const API = window.location.origin; // 🔥 usa el mismo host (8000)
+const API = window.location.origin; // mismo host (8000)
 
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -45,7 +45,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   const password = document.getElementById("password").value;
 
   try {
-    // 🔥 limpiar sesión vieja SIEMPRE
+    // limpiar sesión vieja SIEMPRE
     localStorage.clear();
 
     const res = await fetch(`${API}/auth/login`, {
@@ -58,19 +58,19 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
 
     const data = await res.json();
 
-    // 🔥 VALIDACIÓN CLAVE
+    // VALIDACIÓN CLAVE
     if (!data.access_token) {
       throw new Error("Error: el backend no devolvió token");
     }
 
-    // 🔐 guardar sesión
+    // guardar sesión
     localStorage.setItem("token", data.access_token);
     localStorage.setItem("rol", data.rol);
 
     console.log("LOGIN OK:", data);
     console.log("DATA LOGIN:", data);
 
-    // 🔁 redirección por rol
+    // redirección por rol
     if (data.rol === "DOCENTE") {
       window.location.href = "/frontend/bedelia/panel.html";
     } 
