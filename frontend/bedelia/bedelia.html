@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Asistencias - Bedelía</title>
+
+    <!-- Bootstrap -->
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="/frontend/public/css/styles.css">
+
+    <style>
+        body {
+            background: #f4f6f9;
+        }
+
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        th {
+            background-color: #0a2240 !important;
+            color: white !important;
+        }
+
+        .badge-estado {
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+
+        .estado-en_consulta { background: #1cb26b; color: white; }
+        .estado-tarde       { background: #e3b505; color: white; }
+        .estado-invalido    { background: #c0392b; color: white; }
+        .estado-finalizado  { background: #7f8c8d; color: white; }
+        .estado-programado  { background: #2980b9; color: white; }
+    </style>
+</head>
+
+<body class="p-4">
+
+    <h2 class="mb-4">Asistencias - Bedelía</h2>
+
+    <div class="card p-3 mb-4">
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+
+            <div>
+                <label><strong>Vista:</strong></label>
+                <select id="selector-vista" class="form-select d-inline-block w-auto">
+                    <option value="hoy">Hoy</option>
+                    <option value="pasadas">Anteriores</option>
+                    <option value="futuras">Futuras</option>
+                </select>
+            </div>
+
+            <div>
+                <span>Última actualización: </span>
+                <span id="ultima-actualizacion">-</span>
+                <button id="btn-recargar" class="btn btn-primary btn-sm ms-3">Recargar</button>
+            </div>
+
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-striped table-bordered">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Docente</th>
+                        <th>Materia</th>
+                        <th>Punto</th>
+                        <th>Estado</th>
+                        <th>Motivo</th>
+                        <th>Hora</th>
+                    </tr>
+                </thead>
+
+                <tbody id="tabla-asistencias">
+                    <tr>
+                        <td colspan="7" class="text-center">Cargando...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <script src="/frontend/public/js/bedelia.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,36 @@
+<div id="reader" style="width: 300px;"></div>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script>
+    function onScanSuccess(decodedText, decodedResult) {
+
+        try {
+            const data = JSON.parse(decodedText);
+
+            // Enviar al backend
+            fetch("https://sunshiny-laboringly-beaulah.ngrok-free.dev/docentes/marcar-turno", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    credencial_id: data.credencial_id,
+                    nonce: data.nonce
+                })
+            })
+            .then(r => r.json())
+            .then(resp => {
+                alert("Turno actualizado correctamente: " + JSON.stringify(resp));
+            });
+
+        } catch (error) {
+            alert("QR inválido");
+        }
+    }
+
+    const html5QrCode = new Html5Qrcode("reader");
+    html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        onScanSuccess
+    );
+    
+</script>

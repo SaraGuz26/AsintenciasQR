@@ -1,118 +1,86 @@
-# app/services/scan_service.py
-from datetime import datetime, date, time, timedelta
-from fastapi import HTTPException
+import hmac, json, base64
+from hashlib import sha256
+from datetime import datetime, timezone, time as dtime
 from sqlalchemy.orm import Session
-from app.core.config import get_settings
-from app.utils.qr_crypto import verify_compact
-from app.models.credencial import Credencial
-from app.models.turno import Turno
+from app.repositories.credencial_repo import credencial_repo
+from app.repositories.turno_repo import turno_repo
+from app.repositories.asistencia_repo import asistencia_repo
 from app.models.asistencia import Asistencia
-from app.models.docente import Docente
-from app.models.materia import Materia
-from app.models.punto import Punto
 
-def _estado_turno(now: datetime, turno: Turno) -> str:
-    hi: time = turno.hora_inicio
-    hf: time = turno.hora_fin
-    tol = (turno.tolerancia_min or 0)
+def _verify_signature(payload: dict, nonce: str) -> bool:
+    """QR payload esperado: {"docente_id": int, "exp": int, "sig": "base64"} firmado con HMAC(nonce)."""
+    sig = payload.get("sig")
+    if not sig: return False
+    body = {k: payload[k] for k in payload.keys() if k != "sig"}
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+    digest = hmac.new(nonce.encode(), raw, sha256).digest()
+    expected = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return hmac.compare_digest(sig, expected)
 
-    # convertir a datetimes del día
-    dt_hi = now.replace(hour=hi.hour, minute=hi.minute, second=0, microsecond=0)
-    dt_hf = now.replace(hour=hf.hour, minute=hf.minute, second=0, microsecond=0)
-    dt_tol = dt_hi + timedelta(minutes=tol)
+def _within(h: datetime, ini: dtime, fin: dtime, tol_min: int) -> tuple[bool, str]:
+    t = h.time()
+    # ventana con tolerancia al IN; salida estricta simple
+    if t < ini and (ini.hour*60+ini.minute)-(t.hour*60+t.minute) > tol_min:
+        return False, "Fuera de horario (temprano)"
+    if t > fin:
+        return False, "Fuera de horario (tarde)"
+    if t > ini and (t.hour*60+t.minute)-(ini.hour*60+ini.minute) > tol_min:
+        return True, "Tarde"
+    return True, "EnConsulta"
 
-    if dt_hi <= now <= dt_hf:
-        if now > dt_tol:
-            return "Tarde"
-        return "En curso"
-    return "Fuera de turno"
+class ScanService:
+    def validar(self, db: Session, qr_payload: str, punto_id: int, ts: datetime | None):
+        now = ts or datetime.now(timezone.utc)
 
-def validar_y_registrar(db: Session, qr_text: str, punto_id: int):
-    s = get_settings()
+        # 1) parse payload
+        try:
+            data = json.loads(qr_payload) if not qr_payload.startswith("{") else json.loads(qr_payload)
+        except Exception:
+            return False, None, None, "QR inválido (parse)"
 
-    # 1) Verificar firma y parsear payload
-    try:
-        payload = verify_compact(qr_text, s.SECRET_QR)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        docente_id = int(data.get("docente_id", 0))
+        if not docente_id:
+            return False, None, None, "QR sin docente"
 
-    # payload esperado
-    docente_id = int(payload.get("docente_id", 0))
-    credencial_id = int(payload.get("credencial_id", 0))
-    nonce = payload.get("nonce")
-    exp = int(payload.get("exp", 0))
+        # 2) credencial activa y firma
+        cred = credencial_repo.activa_de_docente(db, docente_id)
+        if not cred or not cred.nonce_actual:
+            return False, None, None, "Sin credencial activa"
+        if not _verify_signature(data, cred.nonce_actual):
+            return False, None, None, "Firma inválida"
 
-    if not (docente_id and credencial_id and nonce and exp):
-        raise HTTPException(400, "Payload incompleto en el QR")
+        # 3) turno vigente (aplicando excepción)
+        t = turno_repo.vigente_para(db, docente_id, now)
+        if not t:
+            return False, None, None, "Sin turno planificado hoy"
+        turno, exc = t
 
-    now = datetime.now()
-    if now.timestamp() > exp:
-        raise HTTPException(400, "QR expirado")
+        # punto efectivo y horario efectivo
+        punto_ok = (exc.punto_id_alt if exc and exc.punto_id_alt else turno.punto_id_plan)
+        ini = (exc.hora_inicio_alt if exc and exc.hora_inicio_alt else turno.hora_inicio)
+        fin = (exc.hora_fin_alt if exc and exc.hora_fin_alt else turno.hora_fin)
 
-    # 2) Validar credencial
-    cred = db.query(Credencial).filter(
-        Credencial.id == credencial_id,
-        Credencial.docente_id == docente_id,
-        Credencial.activo == True
-    ).first()
-    if not cred:
-        raise HTTPException(400, "Credencial inexistente o inactiva")
-    if cred.nonce_actual != nonce:
-        raise HTTPException(400, "Credencial revocada o no vigente (nonce)")
+        if punto_ok != punto_id:
+            estado = "Reubicado"
+            motivo = "Lectura en otro punto"
+            valido = False
+        else:
+            ok, etiqueta = _within(now, ini, fin, turno.tolerancia_min or 0)
+            estado = etiqueta if ok else "Invalido"
+            motivo = None if ok else etiqueta
+            valido = ok
 
-    # 3) Buscar turno vigente para docente + punto + día
-    dia = now.weekday()
-
-    turno = (
-        db.query(Turno)
-        .filter(
-            Turno.docente_id == docente_id,
-            Turno.punto_id == punto_id,          # si tu campo es punto_plan_id, cambialo aquí
-            Turno.dia_semana == dia,
-            Turno.activo == True
-        )
-        .first()
-    )
-    if not turno:
-        # podría existir Turno pero en otro punto → decide el mensaje que prefieras
-        raise HTTPException(404, "No hay turno vigente para este punto")
-
-    # 4) Calcular estado
-    estado = _estado_turno(now, turno)
-
-    # 5) Registrar asistencia si corresponde (idempotente por turno+fecha)
-    hoy = date.today()
-    ya_esta = db.query(Asistencia).filter(
-        Asistencia.turno_id == turno.id,
-        Asistencia.fecha == hoy,
-        Asistencia.es_valida == True
-    ).first()
-
-    saved = False
-    if not ya_esta and estado != "Fuera de turno":
+        # 4) persistir asistencia
         a = Asistencia(
+            docente_id=docente_id,
             turno_id=turno.id,
-            fecha=hoy,
-            credencial_id=credencial_id,
-            es_valida=True
+            punto_id=punto_id,
+            estado=estado,
+            motivo=motivo,
+            valido=valido,
+            fuente="lector"  # o "camara"
         )
-        db.add(a)
-        db.commit()
-        saved = True
+        db.add(a); db.commit(); db.refresh(a)
+        return True if valido else False, docente_id, turno.id, estado
 
-    # 6) Armar respuesta enriquecida
-    doc = db.query(Docente).get(docente_id)
-    mat = db.query(Materia).get(turno.materia_id)
-    pto = db.query(Punto).get(punto_id)
-
-    return {
-        "ok": True,
-        "docente_id": docente_id,
-        "profesor": f"{doc.nombre} {doc.apellido}" if doc else None,
-        "materia": mat.nombre if mat else None,
-        "aula": (pto.aula or pto.etiqueta) if pto else None,
-        "estado": estado,
-        "desde": turno.hora_inicio.strftime("%H:%M"),
-        "hasta": turno.hora_fin.strftime("%H:%M"),
-        "registrado": saved
-    }
+scan_service = ScanService()

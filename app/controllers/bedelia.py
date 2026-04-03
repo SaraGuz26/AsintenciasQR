@@ -1,118 +1,134 @@
-# app/controllers/bedelia.py
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from datetime import datetime, date
-import csv
-import io
-
+from sqlalchemy import select, func
+from datetime import date, datetime, time, timedelta
 from app.web.deps import get_db
-from app.models.turno import Turno
-from app.models.docente import Docente
-from app.models.materia import Materia
-from app.models.punto import Punto
 from app.models.asistencia import Asistencia
+from app.models.docente import Docente
+from app.models.turno import Turno
+from app.models.punto import Punto
+from app.models.materia import Materia
+import pytz
+ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 router = APIRouter(prefix="/bedelia", tags=["bedelia"])
 
-def _parse_fecha(fecha_str: str | None) -> date:
-    if fecha_str:
-        return datetime.strptime(fecha_str, "%Y-%m-%d").date()
-    return date.today()
-
-@router.get("/resumen")
-def resumen(
-    fecha: str | None = Query(None, description="YYYY-MM-DD"),
-    docente: str | None = Query(None, description="Filtro por nombre/apellido"),
+@router.get("/estado-diario")
+def estado_diario(
+    fecha: date = Query(...),
     db: Session = Depends(get_db)
 ):
-    """
-    Resumen por docente para la fecha dada.
-    presentes = asistencias registradas para esos turnos en esa fecha
-    ausentes  = turnos del día - presentes
-    tardanzas = 0 (placeholder por ahora)
-    """
-    d = _parse_fecha(fecha)
-    dia = d.weekday()
+    q = (db.query(Asistencia, Docente, Turno, Punto)
+           .join(Docente, Docente.id==Asistencia.docente_id)
+           .join(Turno, Turno.id==Asistencia.turno_id)
+           .join(Punto, Punto.id==Asistencia.punto_id)
+           .filter(func.date(Asistencia.created_at)==fecha))  # asumiendo created_at en Asistencia
 
-    # Turnos del día, con docente/materia/punto
-    q = (
-        db.query(Turno, Docente, Materia, Punto)
-        .join(Docente, Turno.docente_id == Docente.id)
-        .join(Materia, Turno.materia_id == Materia.id)
-        .join(Punto, Turno.punto_id == Punto.id)  # <-- cambia si es punto_plan_id
-        .filter(
-            Turno.activo == True,
-            Docente.activo == True,
-            Materia.activo == True,
-            Turno.dia_semana == dia
-        )
+    return [{
+        "docente": f"{d.apellido}, {d.nombre}",
+        "materia_id": t.materia_id,
+        "punto": p.etiqueta,
+        "estado": a.estado,
+        "motivo": a.motivo,
+        "valido": a.valido
+    } for a, d, t, p in q.all()]
+
+
+@router.get("/asistencias/hoy")
+def asistencias_hoy(db: Session = Depends(get_db)):
+    """Devuelve las asistencias del día actual para el panel de Bedelía."""
+
+    hoy = datetime.utcnow().date()
+    inicio = datetime.combine(hoy, time(0, 0, 0))
+    fin = datetime.combine(hoy, time(23, 59, 59))
+
+    asistencias = (
+        db.query(Asistencia)
+        .join(Docente, Asistencia.docente_id == Docente.id)
+        .join(Turno, Asistencia.turno_id == Turno.id, isouter=True)
+        .join(Punto, Asistencia.punto_id == Punto.id)
+        .join(Materia, Turno.materia_id == Materia.id, isouter=True)
+        .filter(Asistencia.ts_lectura_utc.between(inicio, fin))
+        .order_by(Asistencia.ts_lectura_utc.desc())
+        .all()
     )
-    if docente:
-        like = f"%{docente}%"
-        q = q.filter((Docente.apellido.like(like)) | (Docente.nombre.like(like)))
 
-    rows = q.all()
-
-    # Agrupar por docente
-    by_doc = {}
-    for t, doc, mat, pto in rows:
-        if doc.id not in by_doc:
-            by_doc[doc.id] = {
-                "profesor": f"{doc.nombre} {doc.apellido}",
-                "turnos_del_dia": 0,
-                "presentes": 0,
-                "ausentes": 0,
-                "tardanzas": 0,  # placeholder
+    resultado = []
+    for a in asistencias:
+        resultado.append(
+            {
+                "id": a.id,
+                "docente": f"{a.docente.nombre} {a.docente.apellido}",
+                "materia": a.turno.materia.nombre if a.turno and a.turno.materia else None,
+                "punto": a.punto.nombre if a.punto else None,
+                "estado": a.estado.value if hasattr(a.estado, "value") else str(a.estado),
+                "motivo": a.motivo_texto,
+                "hora": a.ts_lectura_utc.isoformat(),
             }
-        by_doc[doc.id]["turnos_del_dia"] += 1
+        )
 
-        # ¿Hubo asistencia para este turno en la fecha?
-        hay_asistencia = (
-            db.query(Asistencia.id)
+    return resultado
+
+
+@router.get("/asistencias/calendario")
+def asistencias_calendario(db: Session = Depends(get_db)):
+
+    hoy = date.today()
+    dow_hoy = hoy.isoweekday()  # 1=lunes
+
+    # --- TURNOS DE HOY ---
+    turnos_hoy = (
+        db.query(Turno)
+        .filter(Turno.activo == True, Turno.dia_semana == dow_hoy)
+        .all()
+    )
+
+    # --- TURNOS PASADOS (otros días < hoy) ---
+    turnos_pasados = (
+        db.query(Turno)
+        .filter(Turno.activo == True, Turno.dia_semana < dow_hoy)
+        .all()
+    )
+
+    # --- TURNOS FUTUROS (otros días > hoy) ---
+    turnos_futuros = (
+        db.query(Turno)
+        .filter(Turno.activo == True, Turno.dia_semana > dow_hoy)
+        .all()
+    )
+
+    def estado_turno(t: Turno):
+        """Busca asistencia del día correspondiente y devuelve estado real."""
+        asist = (
+            db.query(Asistencia)
             .filter(
                 Asistencia.turno_id == t.id,
-                Asistencia.fecha == d,
-                Asistencia.es_valida == True
+                func.date(Asistencia.ts_lectura_utc) == hoy
             )
+            .order_by(Asistencia.ts_lectura_utc.desc())
             .first()
-            is not None
         )
-        if hay_asistencia:
-            by_doc[doc.id]["presentes"] += 1
 
-    # Calcular ausentes
-    for v in by_doc.values():
-        v["ausentes"] = v["turnos_del_dia"] - v["presentes"]
+        if asist:
+            return asist.estado.value, asist.motivo_texto or "-", asist.ts_lectura_utc.strftime("%H:%M")
+        else:
+            return "PROGRAMADO", "-", f"{t.hora_inicio.strftime('%H:%M')} - {t.hora_fin.strftime('%H:%M')}"
 
-    # Salida ordenada por apellido
-    salida = sorted(by_doc.values(), key=lambda x: x["profesor"])
-    return salida
+    def turno_to_dict(t: Turno):
+        estado, motivo, hora = estado_turno(t)
+        return {
+            "id": t.id,
+            "docente": f"{t.docente.nombre} {t.docente.apellido}",
+            "materia": t.materia.nombre if t.materia else "-",
+            "punto": t.punto_plan.etiqueta if t.punto_plan else "-",
+            "estado": estado,
+            "motivo": motivo,
+            "hora": hora,
+            "fecha": hoy.strftime("%Y-%m-%d"),
+        }
 
-@router.get("/export.csv")
-def export_csv(
-    fecha: str | None = Query(None, description="YYYY-MM-DD"),
-    docente: str | None = Query(None, description="Filtro por nombre/apellido"),
-    db: Session = Depends(get_db)
-):
-    """
-    Mismo dataset que /bedelia/resumen pero como CSV descargable.
-    """
-    data = resumen(fecha=fecha, docente=docente, db=db)
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Profesor", "Turnos del día", "Presentes", "Ausentes", "Tardanzas"])
-    for row in data:
-        writer.writerow([
-            row["profesor"],
-            row["turnos_del_dia"],
-            row["presentes"],
-            row["ausentes"],
-            row["tardanzas"]
-        ])
-
-    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM para Excel
-    headers = {
-        "Content-Disposition": f'attachment; filename="resumen_{fecha or date.today().isoformat()}.csv"'
+    return {
+        "hoy": [turno_to_dict(t) for t in turnos_hoy],
+        "pasadas": [turno_to_dict(t) for t in turnos_pasados],
+        "futuras": [turno_to_dict(t) for t in turnos_futuros],
     }
-    return Response(content=csv_bytes, media_type="text/csv; charset=utf-8", headers=headers)
