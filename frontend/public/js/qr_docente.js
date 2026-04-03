@@ -1,15 +1,37 @@
-const DOCENTE_ID = 1;  // TODO: reemplazar con el del login real
-let turnoEditando = null;
+// --- Auth ---
+const token = localStorage.getItem("token");
+if (!token) window.location.href = "/frontend/bedelia/login.html";
 
+const HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+};
+
+let DOCENTE_ID = null;  // se carga desde /docentes/me
+let turnoEditando = null;
+let turnosOriginal= []; // Para vistas
+
+const API = window.location.origin;
 // ==============================
 // Helper para fetch con JSON
 // ==============================
-async function fetchJson(url, options) {
-    const resp = await fetch(url, options);
+async function fetchJson(url, options = {}) {
+    options.headers = { ...HEADERS, ...(options.headers || {}) };
+
+    const resp = await fetch(API + url, options); 
+
+    if (resp.status === 401 || resp.status === 403) {
+        console.log("403 → token inválido o no autorizado");
+        localStorage.clear();
+        window.location.href = "/frontend/bedelia/login.html";
+        return null;
+    }
+
     if (!resp.ok) {
         console.error("Error en fetch", url, resp.status);
         return null;
     }
+
     return await resp.json();
 }
 
@@ -34,12 +56,19 @@ function toast(msg) {
 // Cargar datos del docente
 // ==============================
 async function cargarDocente() {
-    const d = await fetchJson(`/docentes/${DOCENTE_ID}`);
+    const d = await fetchJson(`/docentes/me`);
     if (!d) return;
+
+    DOCENTE_ID = d.id;  // guardamos el ID real para el resto de llamadas
 
     document.getElementById("doc_nombre").textContent = d.nombre + " " + d.apellido;
     document.getElementById("doc_legajo").textContent = d.legajo;
     document.getElementById("doc_email").textContent = d.email;
+
+    // recién tenemos DOCENTE_ID, cargamos el resto
+    await cargarCredencial();
+    await cargarTurnos();
+    await cargarTurnosHoy();
 }
 
 // ==============================
@@ -63,7 +92,10 @@ async function cargarCredencial() {
 }
 
 async function regenerarQR() {
-    await fetch(`/docentes/${DOCENTE_ID}/credencial/regenerar`, { method: "POST" });
+    await fetch(`/docentes/${DOCENTE_ID}/credencial/regenerar`, {
+        method: "POST",
+        headers: HEADERS
+    });
     await cargarCredencial();
     toast("QR regenerado");
 }
@@ -89,13 +121,18 @@ function ocultarForm() {
     document.getElementById("t_materia").value = "";
 }
 
-// ==============================
+
 // Listar turnos del docente
-// ==============================
 async function cargarTurnos() {
     const lista = await fetchJson(`/turnos/docente/${DOCENTE_ID}`);
     if (!lista) return;
 
+    turnosOriginal = lista;
+    renderTurnos(lista);
+}
+
+// Cargar Turnos y renderizar
+function renderTurnos(lista) {
     const tbody = document.getElementById("tabla_turnos");
     tbody.innerHTML = "";
 
@@ -108,14 +145,28 @@ async function cargarTurnos() {
             <td>${t.punto_nombre}</td>
             <td>${t.materia_nombre}</td>
             <td>
-                <button onclick="editarTurno(${t.id})">Editar</button>
-                <button onclick="eliminarTurno(${t.id})">Eliminar</button>
+                <div class="acciones">
+                    <button class="btn-editar" onclick="editarTurno(${t.id})">Editar</button>
+                    <button class="btn-eliminar" onclick="eliminarTurno(${t.id})">Eliminar</button>
+                </div>
             </td>
         `;
         tbody.appendChild(tr);
     });
 }
 
+// Cambiar Vista de dias de los turnos
+function cambiarVista(dia) {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    event.target.classList.add("active");
+
+    if (dia === "todos") {
+        renderTurnos(turnosOriginal);
+    } else {
+        const filtrados = turnosOriginal.filter(t => t.dia_semana === dia);
+        renderTurnos(filtrados);
+    }
+}
 // ==============================
 // Crear turno
 // ==============================
@@ -142,7 +193,7 @@ async function crearTurno() {
 
     const res = await fetch(`/turnos`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: HEADERS,
         body: JSON.stringify(payload)
     });
 
@@ -167,7 +218,9 @@ async function eliminarTurno(id) {
         return;
     }
 
-    const r = await fetch(`/turnos/${id}`, { method: "DELETE" });
+    const r = await fetch(`/turnos/${id}`, { 
+        method: "DELETE", 
+        headers: HEADERS });
 
     if (r.ok) {
         toast("Turno eliminado");
@@ -291,7 +344,7 @@ async function guardarEdicionTurno() {
 
     const res = await fetch(`/turnos/${turnoEditando}`, {
         method: "PUT",
-        headers: {"Content-Type": "application/json"},
+        headers: HEADERS,
         body: JSON.stringify(data)
     });
 
@@ -370,8 +423,5 @@ function diaNombre(n) {
 // Inicialización del panel
 // ==============================
 cargarDocente();
-cargarCredencial();
 cargarPuntos();
 cargarMaterias();
-cargarTurnos();
-cargarTurnosHoy();

@@ -1,7 +1,7 @@
-from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from app.models.base import Base
-
+from app.models.usuario import Usuario
 class Docente(Base):
     __tablename__ = "docente"
 
@@ -13,6 +13,9 @@ class Docente(Base):
     depto = Column(String(120))
     activo = Column(Boolean, nullable=False, default=True)
 
-    turnos = relationship("Turno", back_populates="docente")
+    turnos_base = relationship("TurnoBase", back_populates="docente")
     credenciales = relationship("Credencial", back_populates="docente")
     asistencias = relationship("Asistencia", back_populates="docente")
+
+    usuario_id = Column(Integer, ForeignKey("usuario.id"), nullable=True)
+    usuario = relationship("Usuario", backref="docente")

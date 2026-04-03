@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from datetime import date, time
 
 class TurnoExcepcionBase(BaseModel):
-    turno_id: int
+    turno_base_id: int               # ✅ antes turno_id
     fecha: date
     punto_id_alt: int | None = None
     hora_inicio_alt: time | None = None
@@ -10,7 +10,8 @@ class TurnoExcepcionBase(BaseModel):
     motivo: str | None = None
     activo: bool = True
 
-class TurnoExcepcionCreate(TurnoExcepcionBase): pass
+class TurnoExcepcionCreate(TurnoExcepcionBase):
+    pass
 
 class TurnoExcepcionUpdate(BaseModel):
     punto_id_alt: int | None = None
@@ -21,4 +22,10 @@ class TurnoExcepcionUpdate(BaseModel):
 
 class TurnoExcepcionOut(TurnoExcepcionBase):
     id: int
-    class Config: from_attributes = True
+    class Config:
+        from_attributes = True
+
+
+# (opcional pero MUY útil para el front)
+class TurnoExcepcionOutFull(TurnoExcepcionOut):
+    punto_nombre: str | None = None

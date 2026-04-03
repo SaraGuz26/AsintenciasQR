@@ -1,18 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, time, timedelta, timezone
-import pytz  # si usás tz
+import pytz
 from app.web.deps import get_db
 from app.models.asistencia import Asistencia, EstadoAsistencia, FuenteLectura
-from app.models.turno import Turno, EstadoTurno
+from app.models.turno_base import TurnoBase
+from app.models.turno_instancia import TurnoInstancia, EstadoTurnoInstancia
+
+from app.models.turno_excepcion import TurnoExcepcion
 from app.models.credencial import Credencial
-from app.models.docente import Docente
-from app.models.punto import Punto
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 
 router = APIRouter(prefix="/asistencias", tags=["asistencias"])
+ARG = pytz.timezone("America/Argentina/Buenos_Aires")
 
 class RegistroQR(BaseModel):
     punto_id: int
@@ -20,142 +21,194 @@ class RegistroQR(BaseModel):
     qr_nonce: str
     fuente: FuenteLectura
 
+#Registro de asistencias
 @router.post("/registrar")
 def registrar_asistencia(data: RegistroQR, db: Session = Depends(get_db)):
 
-    ahora = datetime.utcnow()
+    ahora_ar = datetime.now(ARG)
+    ahora_utc = ahora_ar.astimezone(pytz.UTC)
 
-    # 1) Validar credencial
     cred = db.query(Credencial).filter(Credencial.id == data.credencial_id).first()
     if not cred:
         raise HTTPException(400, "Credencial inválida")
 
     docente = cred.docente
     if not docente:
-        raise HTTPException(400, "La credencial no pertenece a ningún docente")
+        raise HTTPException(400, "Docente inválido")
 
-    # 2) Buscar turno activo
-    dia = ahora.isoweekday()  # 1=Mon..7=Sun
-    turnos = db.query(Turno).filter(
-        Turno.docente_id == docente.id,
-        Turno.activo == True,
-        Turno.dia_semana == dia
+    dia = ahora_ar.isoweekday()
+
+    turnos = db.query(TurnoBase).filter(
+        TurnoBase.docente_id == docente.id,
+        TurnoBase.activo == True,
+        TurnoBase.dia_semana == dia
     ).all()
 
-    turno_actual = None
-    estado = EstadoAsistencia.FUERA_DE_HORARIO
+    turno_base = None
+    estado = EstadoAsistencia.AUSENTE
+    motivo = "Fuera de horario"
 
-    # 3) Determinar si está dentro del turno o en tolerancia
     for t in turnos:
-        inicio = datetime.combine(ahora.date(), t.hora_inicio)
-        fin = datetime.combine(ahora.date(), t.hora_fin)
+        ini = t.hora_inicio
+        fin = (datetime.combine(ahora_ar.date(), t.hora_fin) +
+               timedelta(minutes=t.tolerancia_min or 0)).time()
 
-        # dentro del horario normal
-        if inicio <= ahora <= fin:
-            turno_actual = t
-            estado = EstadoAsistencia.EN_CONSULTA
+        if ini <= ahora_ar.time() <= fin:
+            turno_base = t
+
+            if ahora_ar.time() <= t.hora_inicio:
+                estado = EstadoAsistencia.PRESENTE
+            else:
+                estado = EstadoAsistencia.TARDE
+
+            motivo = None
             break
 
-        # dentro de tolerancia (tarde)
-        limite_tarde = inicio.replace(minute=inicio.minute + t.tolerancia_min)
-        if inicio < ahora <= limite_tarde:
-            turno_actual = t
-            estado = EstadoAsistencia.TARDE
-            break
+    ti = None
 
-    # 4) Crear asistencia
+    if turno_base:
+        ti = db.query(TurnoInstancia).filter(
+            TurnoInstancia.turno_base_id == turno_base.id,
+            TurnoInstancia.fecha == ahora_ar.date()
+        ).first()
+
+        if not ti:
+            ti = TurnoInstancia(
+                turno_base_id=turno_base.id,
+                fecha=ahora_ar.date(),
+                estado=EstadoTurnoInstancia.EN_CURSO,
+                punto_id_real=data.punto_id,
+                inicio_real_utc=ahora_utc
+            )
+            db.add(ti)
+            db.flush()
+
+    # evitar duplicado real
+    if ti:
+        existente = db.query(Asistencia).filter(
+            Asistencia.turno_instancia_id == ti.id,
+            Asistencia.valido == 1
+        ).first()
+
+        if existente:
+            return {
+                "ok": True,
+                "mensaje": "Ya registrada",
+                "estado": existente.estado.value
+            }
+
     asistencia = Asistencia(
         docente_id=docente.id,
         punto_id=data.punto_id,
-        turno_id=turno_actual.id if turno_actual else None,
+        turno_instancia_id=ti.id if ti else None,
         credencial_id=cred.id,
-        ts_lectura_utc=ahora,
+        ts_lectura_utc=ahora_utc,
         estado=estado,
-        motivo_id=None,
-        motivo_texto=None,
+        motivo_texto=motivo,
         fuente=data.fuente,
         qr_nonce=data.qr_nonce,
-        valido=True,
-        detalle_error=None
+        valido=1
     )
 
     db.add(asistencia)
+
+    if ti and estado in (EstadoAsistencia.PRESENTE, EstadoAsistencia.TARDE):
+        ti.estado = EstadoTurnoInstancia.EN_CURSO
+        db.add(ti)
+
     db.commit()
-    db.refresh(asistencia)
 
     return {
         "ok": True,
-        "estado": asistencia.estado,
-        "turno_id": asistencia.turno_id,
-        "docente": f"{docente.nombre} {docente.apellido}"
+        "estado": asistencia.estado.value,
+        "turno_instancia_id": asistencia.turno_instancia_id,
+        "docente": f"{docente.nombre} {docente.apellido}",
+        "hora_lectura_local": ahora_ar.strftime("%H:%M"),
     }
 
+#Cerrar automaticamente turno no asistidos
 def cerrar_turnos_vencidos():
     db: Session = SessionLocal()
     try:
-        ARG = pytz.timezone("America/Argentina/Buenos_Aires")
-
-        ahora_utc = datetime.now(timezone.utc)
-        ahora_ar  = ahora_utc.astimezone(ARG)
+        ahora_ar = datetime.now(ARG)
+        hoy = ahora_ar.date()
         dia = ahora_ar.isoweekday()
 
-        turnos = db.query(Turno).filter(
-            Turno.activo == True,
-            Turno.dia_semana == dia
+        turnos = db.query(TurnoBase).filter(
+            TurnoBase.activo == True,
+            TurnoBase.dia_semana == dia
         ).all()
 
         for turno in turnos:
 
-            # hora fin + tolerancia
-            fin_local = ARG.localize(
-                datetime.combine(ahora_ar.date(), turno.hora_fin)
-            ) + timedelta(minutes=turno.tolerancia_min or 0)
+            # calcular fin REAL
+            fin = turno.hora_fin
+            tol = turno.tolerancia_min or 0
 
-            fin_utc = fin_local.astimezone(timezone.utc)
+            ahora_min = ahora_ar.hour * 60 + ahora_ar.minute
+            fin_min = fin.hour * 60 + fin.minute + tol
 
-            # turno aun no terminó
-            if ahora_utc < fin_utc:
+            if ahora_min <= fin_min:
                 continue
 
-            # inicio del día
-            inicio_local = ARG.localize(datetime.combine(ahora_ar.date(), time(0, 0)))
-            inicio_utc   = inicio_local.astimezone(timezone.utc)
+            # INSTANCIA
+            ti = db.query(TurnoInstancia).filter(
+                TurnoInstancia.turno_base_id == turno.id,
+                TurnoInstancia.fecha == hoy
+            ).first()
 
-            # traer asistencias del turno HOY
-            asistencias = db.query(Asistencia).filter(
-                Asistencia.turno_id == turno.id,
-                Asistencia.ts_lectura_utc >= inicio_utc
-            ).all()
+            if not ti:
+                ti = TurnoInstancia(
+                    turno_base_id=turno.id,
+                    fecha=hoy,
+                    estado=EstadoTurnoInstancia.FINALIZADO,
+                    punto_id_real=turno.punto_id_plan,
+                    fin_real_utc=datetime.utcnow()
+                )
+                db.add(ti)
+                db.flush()
 
-            # =============================
-            # 🔥 1) SI EXISTE ALGUNA ASISTENCIA → NO CREAR AUTOMÁTICO
-            # =============================
-            if len(asistencias) > 0:
-                # cerrar solo si está en curso
-                if turno.estado != EstadoTurno.FINALIZADO:
-                    turno.estado = EstadoTurno.FINALIZADO
-                    db.add(turno)
-                continue
+            # FINALIZAR TURNO SIEMPRE
+            if ti.estado != EstadoTurnoInstancia.FINALIZADO:
+                ti.estado = EstadoTurnoInstancia.FINALIZADO
 
-            # =============================
-            # 🔥 2) SI NO EXISTE NINGUNA ASISTENCIA → 1 AUSENTE
-            # =============================
+                if not ti.fin_real_utc:
+                    ti.fin_real_utc = datetime.utcnow()
+
+                db.add(ti)
+
+            # si ya marcó (presente/tarde) → NO crear AUSENTE
+            ya_marcado = db.query(Asistencia).filter(
+                Asistencia.turno_instancia_id == ti.id,
+                Asistencia.valido == 1
+            ).first()
+
+            if ya_marcado:
+                continue 
+
+            # evitar duplicar AUSENTE
+            ya_ausente = db.query(Asistencia).filter(
+                Asistencia.turno_instancia_id == ti.id,
+                Asistencia.estado == EstadoAsistencia.AUSENTE
+            ).first()
+
+            if ya_ausente:
+                continue  
+
+            # CREAR AUSENTE
             nueva = Asistencia(
                 docente_id=turno.docente_id,
-                turno_id=turno.id,
                 punto_id=turno.punto_id_plan,
-                credencial_id=None,
-                ts_lectura_utc=ahora_utc,
+                turno_instancia_id=ti.id,
+                ts_lectura_utc=datetime.utcnow(),
                 estado=EstadoAsistencia.AUSENTE,
-                motivo_texto="Ausente (cierre automático)",
-                valido=False,
+                motivo_texto="Ausente automático",
+                valido=0,
                 qr_nonce="-",
-                fuente=FuenteLectura.CAMARA,
+                fuente=FuenteLectura.CAMARA
             )
-            db.add(nueva)
 
-            turno.estado = EstadoTurno.FINALIZADO
-            db.add(turno)
+            db.add(nueva)
 
         db.commit()
 
@@ -164,3 +217,31 @@ def cerrar_turnos_vencidos():
         db.rollback()
     finally:
         db.close()
+
+
+def generar_instancias_del_dia():
+    db: Session = SessionLocal()
+    hoy = datetime.now(ARG).date()
+    dia = hoy.isoweekday()
+
+    turnos = db.query(TurnoBase).filter(
+        TurnoBase.dia_semana == dia,
+        TurnoBase.activo == True
+    ).all()
+
+    for turno in turnos:
+        existe = db.query(TurnoInstancia).filter(
+            TurnoInstancia.turno_base_id == turno.id,
+            TurnoInstancia.fecha == hoy
+        ).first()
+
+        if not existe:
+            nueva = TurnoInstancia(
+                turno_base_id=turno.id,
+                fecha=hoy,
+                estado=EstadoTurnoInstancia.PROGRAMADO,
+                punto_id_real=turno.punto_id_plan
+            )
+            db.add(nueva)
+
+    db.commit()

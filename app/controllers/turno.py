@@ -1,242 +1,277 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime
+import pytz
+from datetime import timedelta
 from app.web.deps import get_db
 from app.services.turno_service import turno_service
-from app.schemas.turno import TurnoOut, TurnoCreate, TurnoUpdate, TurnoOutFull, TurnoOutEditable
-from app.models.turno import Turno, EstadoTurno
+from app.schemas.turno import (
+    TurnoCreate,
+    TurnoUpdate,
+    TurnoOut,
+    TurnoOutFull,
+    TurnoOutEditable
+)
+from app.models.turno_base import TurnoBase
+from app.models.turno_instancia import TurnoInstancia, EstadoTurnoInstancia
 from app.models.materia import Materia
 from app.models.punto import Punto
 from app.models.asistencia import Asistencia
-from sqlalchemy import func
-from datetime import datetime, date
-import pytz  # si usás tz
-
+from datetime import datetime, time
+from app.models.docente import Docente
 
 router = APIRouter(prefix="/turnos", tags=["turnos"])
+ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 @router.get("", response_model=list[TurnoOut])
-def listar(db: Session = Depends(get_db)): return turno_service.list(db)
+def listar(db: Session = Depends(get_db)):
+    return turno_service.list(db)
 
 @router.post("", response_model=TurnoOut)
-def crear(data: TurnoCreate, db: Session = Depends(get_db)): return turno_service.create(db, data)
+def crear(data: TurnoCreate, db: Session = Depends(get_db)):
+    return turno_service.create(db, data)
+
 
 @router.put("/{turno_id}", response_model=TurnoOut)
 def actualizar(turno_id: int, data: TurnoUpdate, db: Session = Depends(get_db)):
 
-    turno = db.query(Turno).filter(Turno.id == turno_id).first()
+    turno = db.query(TurnoBase).filter(TurnoBase.id == turno_id).first()
     if not turno:
         raise HTTPException(404, "El turno no existe")
 
-    # ============================
-    # A) Bloquear FINALIZADO
-    # ============================
-    if turno.estado == EstadoTurno.FINALIZADO:
-        raise HTTPException(
-            400,
-            "No se puede editar un turno ya finalizado"
-        )
-
-    # ============================
-    # B) Buscar asistencias
-    # ============================
-    asistencias = (
-        db.query(Asistencia)
-        .filter(Asistencia.turno_id == turno_id)
-        .count()
-    )
-
-    # ============================
-    # C) Turno EN CURSO
-    # ============================
-    if turno.estado == EstadoTurno.EN_CURSO:
-
-        # Si tiene asistencias → solo se permite editar el punto
-        if asistencias > 0:
-            if (
-                data.hora_inicio != turno.hora_inicio or
-                data.hora_fin != turno.hora_fin or
-                data.dia_semana != turno.dia_semana or
-                data.materia_id != turno.materia_id
-            ):
-                raise HTTPException(
-                    400,
-                    "El turno está en curso: solo se permite modificar el punto del turno"
-                )
-
-            turno.punto_id_plan = data.punto_id_plan
-            db.commit()
-            db.refresh(turno)
-            return turno
-
-        else:
-            # Caso raro: turno en curso sin asistencia
-            if (
-                data.hora_inicio != turno.hora_inicio or
-                data.hora_fin != turno.hora_fin or
-                data.dia_semana != turno.dia_semana or
-                data.materia_id != turno.materia_id
-            ):
-                raise HTTPException(
-                    400,
-                    "El turno está en curso: solo se permite modificar el punto"
-                )
-
-            turno.punto_id_plan = data.punto_id_plan
-            db.commit()
-            db.refresh(turno)
-            return turno
-
-    # ============================
-    # D) PROGRAMADO con asistencias → no editable
-    # ============================
-    if asistencias > 0:
-        raise HTTPException(
-            400,
-            "No se puede editar un turno que ya tiene asistencias registradas"
-        )
-
-    # ============================
-    # E) PROGRAMADO sin asistencias → edición total
-    # ============================
-    obj = turno_service.update(db, turno_id, data)
-    return obj
-
+    return turno_service.update(db, turno_id, data)
 
 
 @router.delete("/{turno_id}")
 def eliminar(turno_id: int, db: Session = Depends(get_db)):
-    turno_service.remove(db, turno_id); return {"ok": True}
+    turno_service.remove(db, turno_id)
+    return {"ok": True}
+
 
 @router.get("/docente/{docente_id}", response_model=list[TurnoOutFull])
 def por_docente(docente_id: int, db: Session = Depends(get_db)):
-    turnos = (
-        db.query(Turno, Materia, Punto)
-        .join(Materia, Materia.id == Turno.materia_id)
-        .join(Punto, Punto.id == Turno.punto_id_plan)
-        .filter(Turno.docente_id == docente_id)
+
+    rows = (
+        db.query(TurnoBase, Materia, Punto)
+        .join(Materia, Materia.id == TurnoBase.materia_id)
+        .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+        .filter(TurnoBase.docente_id == docente_id)
         .all()
     )
 
-    resultado = []
-    for t, m, p in turnos:
-        resultado.append({
+    return [
+        {
             "id": t.id,
             "dia_semana": t.dia_semana,
             "hora_inicio": t.hora_inicio,
             "hora_fin": t.hora_fin,
             "tolerancia_min": t.tolerancia_min,
             "activo": t.activo,
-
             "materia_id": m.id,
             "materia_nombre": m.nombre,
-
             "punto_id_plan": p.id,
-            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else p.nombre
-        })
+            "punto_nombre": p.etiqueta,
+        }
+        for t, m, p in rows
+    ]
 
-    return resultado
-
-@router.get("/{turno_id}", response_model=TurnoOut)
+@router.get("/{turno_id}", response_model=TurnoOutEditable)
 def obtener(turno_id: int, db: Session = Depends(get_db)):
-    obj = db.query(Turno).filter(Turno.id == turno_id).first()
-    if not obj:
-        raise HTTPException(404, "No existe")
-    return obj
 
-from datetime import datetime
+    t = db.query(TurnoBase).filter(TurnoBase.id == turno_id).first()
+    if not t:
+        raise HTTPException(404, "No existe")
+
+    # estado se infiere por instancias (hoy)
+    hoy = datetime.now(ARG_TZ).date()
+    inst = (
+        db.query(TurnoInstancia)
+        .filter(
+            TurnoInstancia.turno_base_id == t.id,
+            TurnoInstancia.fecha == hoy
+        )
+        .first()
+    )
+
+    estado = inst.estado.value if inst else "PROGRAMADO"
+
+    return {
+        "id": t.id,
+        "dia_semana": t.dia_semana,
+        "hora_inicio": t.hora_inicio,
+        "hora_fin": t.hora_fin,
+        "tolerancia_min": t.tolerancia_min,
+        "activo": t.activo,
+        "estado": estado,
+        "materia_id": t.materia_id,
+        "materia_nombre": t.materia.nombre,
+        "punto_id_plan": t.punto_id_plan,
+        "punto_nombre": t.punto_plan.etiqueta,
+    }
 
 @router.get("/docente/{docente_id}/hoy", response_model=list[TurnoOutFull])
 def turnos_hoy(docente_id: int, db: Session = Depends(get_db)):
-    hoy = datetime.now().weekday() + 1  # lunes=1 ... domingo=7
+    hoy_dow = datetime.now(ARG_TZ).isoweekday()  # 1..7
 
-    turnos = (
-        db.query(Turno, Materia, Punto)
-        .join(Materia, Materia.id == Turno.materia_id)
-        .join(Punto, Punto.id == Turno.punto_id_plan)
-        .filter(Turno.docente_id == docente_id)
-        .filter(Turno.dia_semana == hoy)
+    rows = (
+        db.query(TurnoBase, Materia, Punto)
+        .join(Materia, Materia.id == TurnoBase.materia_id)
+        .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+        .filter(
+            TurnoBase.docente_id == docente_id,
+            TurnoBase.dia_semana == hoy_dow,
+            TurnoBase.activo == True
+        )
         .all()
     )
 
-    resultado = []
-    for t, m, p in turnos:
-        resultado.append({
-            "id": t.id,
-            "dia_semana": t.dia_semana,
-            "hora_inicio": t.hora_inicio,
-            "hora_fin": t.hora_fin,
-            "tolerancia_min": t.tolerancia_min,
-            "activo": t.activo,
+    return [
+        {
+            "id": tb.id,
+            "dia_semana": tb.dia_semana,
+            "hora_inicio": tb.hora_inicio,
+            "hora_fin": tb.hora_fin,
+            "tolerancia_min": tb.tolerancia_min,
+            "activo": tb.activo,
             "materia_id": m.id,
             "materia_nombre": m.nombre,
             "punto_id_plan": p.id,
-            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else p.nombre
-        })
+            "punto_nombre": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", ""),
+        }
+        for tb, m, p in rows
+    ]
 
-    return resultado
 
 @router.get("/docente/{docente_id}/estado-hoy")
 def estado_docente_hoy(docente_id: int, db: Session = Depends(get_db)):
 
-    ar_tz = pytz.timezone("America/Argentina/Buenos_Aires")
-    ahora_ar = datetime.now(ar_tz)
-    hoy = ahora_ar.date()
+    ahora_ar = datetime.now(ARG_TZ)
+    hoy_ar = ahora_ar.date()
+    dow = ahora_ar.isoweekday()
 
-    turnos = (
-        db.query(Turno, Materia, Punto)
-        .join(Materia, Materia.id == Turno.materia_id)
-        .join(Punto, Punto.id == Turno.punto_id_plan)
-        .filter(Turno.docente_id == docente_id)
-        .filter(Turno.dia_semana == ahora_ar.isoweekday())
+    # traer TurnoBase del docente para hoy
+    bases = (
+        db.query(TurnoBase, Materia)
+        .join(Materia, Materia.id == TurnoBase.materia_id)
+        .filter(
+            TurnoBase.docente_id == docente_id,
+            TurnoBase.dia_semana == dow,
+            TurnoBase.activo == True
+        )
         .all()
     )
 
     resultado = []
 
-    for t, m, p in turnos:
+    for tb, m in bases:
 
-        # asistencia más reciente del día
-        asistencia = (
-            db.query(Asistencia)
-            .filter(Asistencia.turno_id == t.id)
-            .filter(Asistencia.ts_lectura_utc >= hoy)
-            .order_by(Asistencia.ts_lectura_utc.desc())
+        # instancia del día (si ya fue creada)
+        ti = (
+            db.query(TurnoInstancia)
+            .filter(
+                TurnoInstancia.turno_base_id == tb.id,
+                TurnoInstancia.fecha == hoy_ar
+            )
             .first()
         )
 
-        # convertir horarios del turno a minutos
-        minutos_ahora = ahora_ar.hour * 60 + ahora_ar.minute
-        minutos_ini = t.hora_inicio.hour * 60 + t.hora_inicio.minute
-        minutos_fin = t.hora_fin.hour * 60 + t.hora_fin.minute + (t.tolerancia_min or 0)
-
-        # si hay asistencia → usar el estado real
-        if asistencia:
-            estado = asistencia.estado.value
-
+        # punto real (si hay instancia) o plan
+        if ti:
+            p = db.query(Punto).filter(Punto.id == ti.punto_id_real).first()
+            punto_nombre = p.etiqueta if p and hasattr(p, "etiqueta") else (getattr(p, "nombre", None) if p else None)
         else:
-            # NO hay asistencia registrada…
-            if minutos_ahora < minutos_ini:
+            p = db.query(Punto).filter(Punto.id == tb.punto_id_plan).first()
+            punto_nombre = p.etiqueta if p and hasattr(p, "etiqueta") else (getattr(p, "nombre", None) if p else None)
+
+        # última asistencia del día para esa instancia (si hay)
+        ultima = None
+        if ti:
+            ultima = (
+                db.query(Asistencia)
+                .filter(Asistencia.turno_instancia_id == ti.id)
+                .order_by(Asistencia.ts_lectura_utc.desc())
+                .first()
+            )
+
+        if ti:
+            if ti:
+                if ti.estado == EstadoTurnoInstancia.FINALIZADO:
+
+                    if ultima:
+                        estado = f"FINALIZADO ({ultima.estado.value})"
+                    else:
+                        estado = "FINALIZADO (AUSENTE)"
+
+                elif ti.estado == EstadoTurnoInstancia.EN_CURSO:
+                    if ultima:
+                        estado = ultima.estado.value
+                    else:
+                        estado = "EN_CURSO"
+
+                else:
+                    estado = "PROGRAMADO"
+        else:
+            # fallback solo por horario
+            ahora_min = ahora_ar.hour * 60 + ahora_ar.minute
+            ini = tb.hora_inicio.hour * 60 + tb.hora_inicio.minute
+            fin = tb.hora_fin.hour * 60 + tb.hora_fin.minute + (tb.tolerancia_min or 0)
+
+            if ahora_min < ini:
                 estado = "PROGRAMADO"
-            elif minutos_ahora > minutos_fin:
+            elif ahora_min > fin:
                 estado = "FINALIZADO"
             else:
-                estado = "AUSENTE"
+                estado = "EN_CURSO"
 
         resultado.append({
-            "turno_id": t.id,
+            "turno_base_id": tb.id,
             "materia_nombre": m.nombre,
-            "punto_nombre": p.etiqueta,
-            "hora_inicio": t.hora_inicio.strftime("%H:%M"),
-            "hora_fin": t.hora_fin.strftime("%H:%M"),
+            "punto_nombre": punto_nombre,
+            "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
+            "hora_fin": tb.hora_fin.strftime("%H:%M"),
             "estado": estado,
+            "turno_instancia_id": ti.id if ti else None
         })
 
     return resultado
 
-
 @router.get("/{turno_id}", response_model=TurnoOutEditable)
 def obtener(turno_id: int, db: Session = Depends(get_db)):
-    obj = db.query(Turno).filter(Turno.id == turno_id).first()
-    if not obj:
+
+    tb = db.query(TurnoBase).filter(TurnoBase.id == turno_id).first()
+    if not tb:
         raise HTTPException(404, "No existe")
-    return obj
+
+    hoy_ar = datetime.now(ARG_TZ).date()
+    ti = (
+        db.query(TurnoInstancia)
+        .filter(
+            TurnoInstancia.turno_base_id == tb.id,
+            TurnoInstancia.fecha == hoy_ar
+        )
+        .first()
+    )
+
+    estado = ti.estado.value if ti else "PROGRAMADO"
+
+    punto = db.query(Punto).filter(Punto.id == tb.punto_id_plan).first()
+    punto_nombre = punto.etiqueta if punto and hasattr(punto, "etiqueta") else getattr(punto, "nombre", "")
+
+    materia = db.query(Materia).filter(Materia.id == tb.materia_id).first()
+
+    return {
+        "id": tb.id,
+        "dia_semana": tb.dia_semana,
+        "hora_inicio": tb.hora_inicio,
+        "hora_fin": tb.hora_fin,
+        "tolerancia_min": tb.tolerancia_min,
+        "activo": tb.activo,
+
+        "estado": estado,
+
+        "materia_id": tb.materia_id,
+        "materia_nombre": materia.nombre if materia else "",
+
+        "punto_id_plan": tb.punto_id_plan,
+        "punto_nombre": punto_nombre,
+    }

@@ -12,6 +12,6 @@ class Punto(Base):
     aula = Column(String(32))
     activo = Column(Boolean, nullable=False, default=True)
 
-    turnos_planificados = relationship("Turno", back_populates="punto_plan")
+    turnos_base = relationship("TurnoBase", back_populates="punto_plan")
     excepciones = relationship("TurnoExcepcion", back_populates="punto_alt")
     asistencias = relationship("Asistencia", back_populates="punto")

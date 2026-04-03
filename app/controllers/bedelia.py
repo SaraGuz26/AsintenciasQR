@@ -1,134 +1,195 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import func
 from datetime import date, datetime, time, timedelta
+import pytz
 from app.web.deps import get_db
 from app.models.asistencia import Asistencia
 from app.models.docente import Docente
-from app.models.turno import Turno
+from app.models.turno_base import TurnoBase
+from app.models.turno_instancia import TurnoInstancia
 from app.models.punto import Punto
 from app.models.materia import Materia
-import pytz
+
 ARG_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 router = APIRouter(prefix="/bedelia", tags=["bedelia"])
 
-@router.get("/estado-diario")
-def estado_diario(
-    fecha: date = Query(...),
-    db: Session = Depends(get_db)
-):
-    q = (db.query(Asistencia, Docente, Turno, Punto)
-           .join(Docente, Docente.id==Asistencia.docente_id)
-           .join(Turno, Turno.id==Asistencia.turno_id)
-           .join(Punto, Punto.id==Asistencia.punto_id)
-           .filter(func.date(Asistencia.created_at)==fecha))  # asumiendo created_at en Asistencia
+def obtener_dia_es(fecha):
+    try:
+        return {
+            "Monday": "Lunes",
+            "Tuesday": "Martes",
+            "Wednesday": "Miércoles",
+            "Thursday": "Jueves",
+            "Friday": "Viernes",
+            "Saturday": "Sábado",
+            "Sunday": "Domingo",
+        }[fecha.strftime("%A")]
+    except KeyError:
+        return ""
 
-    return [{
-        "docente": f"{d.apellido}, {d.nombre}",
-        "materia_id": t.materia_id,
-        "punto": p.etiqueta,
-        "estado": a.estado,
-        "motivo": a.motivo,
-        "valido": a.valido
-    } for a, d, t, p in q.all()]
+def obtener_turnos_futuros(db: Session, hoy_ar):
 
+    futuras = []
 
-@router.get("/asistencias/hoy")
-def asistencias_hoy(db: Session = Depends(get_db)):
-    """Devuelve las asistencias del día actual para el panel de Bedelía."""
+    for i in range(1, 8):  # próximos 7 días
+        fecha = hoy_ar + timedelta(days=i)
+        dia = fecha.isoweekday()
 
-    hoy = datetime.utcnow().date()
-    inicio = datetime.combine(hoy, time(0, 0, 0))
-    fin = datetime.combine(hoy, time(23, 59, 59))
-
-    asistencias = (
-        db.query(Asistencia)
-        .join(Docente, Asistencia.docente_id == Docente.id)
-        .join(Turno, Asistencia.turno_id == Turno.id, isouter=True)
-        .join(Punto, Asistencia.punto_id == Punto.id)
-        .join(Materia, Turno.materia_id == Materia.id, isouter=True)
-        .filter(Asistencia.ts_lectura_utc.between(inicio, fin))
-        .order_by(Asistencia.ts_lectura_utc.desc())
-        .all()
-    )
-
-    resultado = []
-    for a in asistencias:
-        resultado.append(
-            {
-                "id": a.id,
-                "docente": f"{a.docente.nombre} {a.docente.apellido}",
-                "materia": a.turno.materia.nombre if a.turno and a.turno.materia else None,
-                "punto": a.punto.nombre if a.punto else None,
-                "estado": a.estado.value if hasattr(a.estado, "value") else str(a.estado),
-                "motivo": a.motivo_texto,
-                "hora": a.ts_lectura_utc.isoformat(),
-            }
+        turnos = (
+            db.query(TurnoBase, Docente, Punto, Materia)
+            .join(Docente, Docente.id == TurnoBase.docente_id)
+            .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+            .join(Materia, Materia.id == TurnoBase.materia_id)
+            .filter(
+                TurnoBase.dia_semana == dia,
+                TurnoBase.activo == True
+            )
+            .all()
         )
 
-    return resultado
+        for tb, d, p, m in turnos:
+            futuras.append({
+                "id": None,
+                "fecha": fecha.strftime("%Y-%m-%d"),
+                "docente": f"{d.nombre} {d.apellido}",
+                "materia": m.nombre if m else "-",
+                "punto": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", "-"),
+                "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
+                "hora_fin": tb.hora_fin.strftime("%H:%M"),
+                "estado": "PROGRAMADO",
+                "motivo": "-",
+                "hora": "-",
+                "dia_semana": obtener_dia_es(fecha)
+            })
 
+    return futuras
+
+def obtener_turnos_pasados(db: Session, hoy_ar):
+
+    from datetime import timedelta
+
+    pasadas = []
+
+    for i in range(1, 8):  # últimos 7 días
+        fecha = hoy_ar - timedelta(days=i)
+        dia = fecha.isoweekday()
+
+        turnos = (
+            db.query(TurnoBase, Docente, Punto, Materia)
+            .join(Docente, Docente.id == TurnoBase.docente_id)
+            .join(Punto, Punto.id == TurnoBase.punto_id_plan)
+            .join(Materia, Materia.id == TurnoBase.materia_id)
+            .filter(
+                TurnoBase.dia_semana == dia,
+                TurnoBase.activo == True
+            )
+            .all()
+        )
+
+        for tb, d, p, m in turnos:
+            pasadas.append({
+                "id": None,
+                "fecha": fecha.strftime("%Y-%m-%d"),
+                "docente": f"{d.nombre} {d.apellido}",
+                "materia": m.nombre if m else "-",
+                "punto": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", "-"),
+                "hora_inicio": tb.hora_inicio.strftime("%H:%M"),
+                "hora_fin": tb.hora_fin.strftime("%H:%M"),
+                "estado": "FINALIZADO (AUSENTE)",  # por defecto
+                "motivo": "-",
+                "hora": "-"
+            })
+
+    return pasadas
 
 @router.get("/asistencias/calendario")
 def asistencias_calendario(db: Session = Depends(get_db)):
 
-    hoy = date.today()
-    dow_hoy = hoy.isoweekday()  # 1=lunes
+    hoy_ar = datetime.now(ARG_TZ).date()
 
-    # --- TURNOS DE HOY ---
-    turnos_hoy = (
-        db.query(Turno)
-        .filter(Turno.activo == True, Turno.dia_semana == dow_hoy)
-        .all()
-    )
+    def obtener_instancias(filtro_fecha):
+        return (
+            db.query(TurnoInstancia, TurnoBase, Docente, Punto, Materia)
+            .join(TurnoBase, TurnoBase.id == TurnoInstancia.turno_base_id)
+            .join(Docente, Docente.id == TurnoBase.docente_id)
+            .join(Punto, Punto.id == TurnoInstancia.punto_id_real)   
+            .join(Materia, Materia.id == TurnoBase.materia_id)
+            .filter(filtro_fecha)
+            .order_by(TurnoInstancia.fecha.desc(), TurnoBase.hora_inicio.asc())
+            .all()
+        )
 
-    # --- TURNOS PASADOS (otros días < hoy) ---
-    turnos_pasados = (
-        db.query(Turno)
-        .filter(Turno.activo == True, Turno.dia_semana < dow_hoy)
-        .all()
-    )
+    inst_pasadas = obtener_instancias(TurnoInstancia.fecha < hoy_ar)
+    inst_hoy = obtener_instancias(TurnoInstancia.fecha == hoy_ar)
+    inst_futuras = obtener_turnos_futuros(db, hoy_ar)
 
-    # --- TURNOS FUTUROS (otros días > hoy) ---
-    turnos_futuros = (
-        db.query(Turno)
-        .filter(Turno.activo == True, Turno.dia_semana > dow_hoy)
-        .all()
-    )
+    def to_ar_hhmm(ts_utc: datetime | None) -> str:
+        if not ts_utc:
+            return "-"
+        if ts_utc.tzinfo is None:
+            ts_utc = pytz.UTC.localize(ts_utc)
+        return ts_utc.astimezone(ARG_TZ).strftime("%H:%M")
 
-    def estado_turno(t: Turno):
-        """Busca asistencia del día correspondiente y devuelve estado real."""
+    def estado_instancia(ti: TurnoInstancia):
+        """Última asistencia para esa instancia."""
         asist = (
             db.query(Asistencia)
-            .filter(
-                Asistencia.turno_id == t.id,
-                func.date(Asistencia.ts_lectura_utc) == hoy
-            )
+            .filter(Asistencia.turno_instancia_id == ti.id)
             .order_by(Asistencia.ts_lectura_utc.desc())
             .first()
         )
 
         if asist:
-            return asist.estado.value, asist.motivo_texto or "-", asist.ts_lectura_utc.strftime("%H:%M")
-        else:
-            return "PROGRAMADO", "-", f"{t.hora_inicio.strftime('%H:%M')} - {t.hora_fin.strftime('%H:%M')}"
+            return (
+                asist.estado.value,
+                asist.motivo_texto or "-",
+                to_ar_hhmm(asist.ts_lectura_utc),
+            )
 
-    def turno_to_dict(t: Turno):
-        estado, motivo, hora = estado_turno(t)
+        # si no hay asistencias, el estado lo define la instancia
+        return (
+            ti.estado.value if hasattr(ti.estado, "value") else str(ti.estado),
+            "-",
+            "-",
+        )
+
+    def hora_inicio_mostrar(tb: TurnoBase) -> str:
+        return tb.hora_inicio.strftime("%H:%M")
+
+    def hora_fin_mostrar(tb: TurnoBase) -> str:
+        return tb.hora_fin.strftime("%H:%M")
+
+    def instancia_to_dict(ti: TurnoInstancia, tb: TurnoBase, d: Docente, p: Punto, m: Materia):
+        estado, motivo, hora_scan = estado_instancia(ti)
+
         return {
-            "id": t.id,
-            "docente": f"{t.docente.nombre} {t.docente.apellido}",
-            "materia": t.materia.nombre if t.materia else "-",
-            "punto": t.punto_plan.etiqueta if t.punto_plan else "-",
+            "id": ti.id,
+            "fecha": ti.fecha.strftime("%Y-%m-%d"),
+            "dia_semana": obtener_dia_es(ti.fecha),
+
+            "docente": f"{d.nombre} {d.apellido}",
+            "materia": m.nombre if m else "-",
+
+            # punto real del día (si se reubicó, esto cambia)
+            "punto": p.etiqueta if hasattr(p, "etiqueta") else getattr(p, "nombre", "-"),
+
+            # planificado con fallback, o real si existe
+            "hora_inicio": hora_inicio_mostrar(tb),
+            "hora_fin": hora_fin_mostrar(tb),
+
             "estado": estado,
             "motivo": motivo,
-            "hora": hora,
-            "fecha": hoy.strftime("%Y-%m-%d"),
+            "hora": hora_scan,  # hora del último scan (AR) si existe
         }
 
     return {
-        "hoy": [turno_to_dict(t) for t in turnos_hoy],
-        "pasadas": [turno_to_dict(t) for t in turnos_pasados],
-        "futuras": [turno_to_dict(t) for t in turnos_futuros],
+        "hoy": [instancia_to_dict(ti, tb, d, p, m) for (ti, tb, d, p, m) in inst_hoy],
+        "pasadas": [
+            instancia_to_dict(ti, tb, d, p, m)
+            for (ti, tb, d, p, m) in inst_pasadas
+        ],
+        "futuras": inst_futuras
+        ,
     }
